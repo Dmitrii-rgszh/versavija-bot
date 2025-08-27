@@ -1,0 +1,16 @@
+version: "3.9"
+services:
+  versavija-bot:
+    image: ${DOCKER_HUB_IMAGE:-<login>/versavija-bot:latest}
+    container_name: versavija-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_PATH: /data/data.db
+    volumes:
+      - versavija-data:/data
+      # - ./.env:/app/.env:ro  # (опционально) смонтировать сам файл внутрь
+volumes:
+  versavija-data:
+    driver: local
