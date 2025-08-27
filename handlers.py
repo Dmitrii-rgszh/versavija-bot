@@ -28,6 +28,7 @@ from keyboards import (
     build_categories_admin_root_keyboard,
     build_confirm_delete_category_kb,
     build_undo_category_delete_kb,
+    build_social_admin_keyboard,
     build_undo_photo_delete_kb,
     build_add_photos_in_progress_kb,
     build_confirm_delete_all_photos_kb,
@@ -317,7 +318,26 @@ async def handle_callback(query: CallbackQuery):
         await query.message.answer("⭐ Отзывы: реальные отклики клиентов и примеры отзывов.")
         return
     if data == "social":
-        await query.message.answer("🔗 Соцсети: Instagram, VK и другие ссылки на профили.")
+        # Get social media text from database
+        default_social_text = """Привет! Я Мария — фотограф и ретушёр 📸✨
+Подписывайтесь на мои соцсети, чтобы видеть свежие съёмки, портфолио и реальные "до/после" ретуши, а также быстро написать мне в личные сообщения.
+
+VK → https://vk.com/versavija
+
+Instagram → https://www.instagram.com/versavija?igsh=Y3ZhdnFvbWN0ejlq
+
+TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
+
+Жду ваши вопросы в директ — отвечаю лично 💬"""
+        
+        social_text = get_setting('social_media_text', default_social_text)
+        await query.message.answer(social_text)
+        
+        # Show edit button for admins
+        is_admin = is_admin_view_enabled(username, query.from_user.id)
+        if is_admin:
+            kb = build_social_admin_keyboard()
+            await query.message.answer('Управление соцсетями:', reply_markup=kb)
         return
 
     # portfolio category selection
@@ -688,6 +708,15 @@ async def handle_callback(query: CallbackQuery):
         except Exception:
             # fallback: send new message if edit fails (e.g., message too old)
             await query.message.answer('📁 Выберите категорию портфолио:', reply_markup=kb)
+        return
+
+    # Social media edit
+    if data == 'social_edit':
+        if not is_admin_view_enabled(username, query.from_user.id):
+            await query.message.answer('🚫 Нет доступа.')
+            return
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'edit_social_text', 'payload': {}}
+        await query.message.answer('📝 Отправьте новый текст для соцсетей:')
         return
 
     if data == 'back_main':
@@ -1381,6 +1410,23 @@ async def handle_admin_pending(message: Message):
             kb = build_portfolio_keyboard(cats, is_admin=True)
             await message.answer('Обновлённый список категорий:', reply_markup=kb)
             return
+        
+        if a == 'edit_social_text':
+            if not message.text:
+                await message.answer('Ожидаю текст для соцсетей. Попробуйте снова.')
+                return
+            new_text = message.text.strip()
+            if not new_text:
+                await message.answer('Текст не может быть пустым.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            set_setting('social_media_text', new_text)
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer('✅ Текст соцсетей обновлён.')
+            return
+            
     # --- Photo/category & menu editing handlers (single consolidated block) ---
     if a == 'add_photo_cat':
             slug = payload.get('slug')

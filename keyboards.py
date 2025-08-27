@@ -201,3 +201,11 @@ def build_confirm_delete_kb(idx: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete::{idx}")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_delete")],
     ])
+
+
+def build_social_admin_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для управления соцсетями"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Редактировать текст", callback_data="social_edit")],
+        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_main")],
+    ])
