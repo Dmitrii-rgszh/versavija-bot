@@ -130,9 +130,9 @@ def build_category_photo_nav_keyboard(slug: str, idx: int) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="◀️", callback_data=f"pf_pic:{slug}:{idx}"),
-            InlineKeyboardButton(text="⬅️ Категории", callback_data="portfolio"),
             InlineKeyboardButton(text="▶️", callback_data=f"pf_pic:{slug}:{idx}"),
-        ]
+        ],
+        [InlineKeyboardButton(text="⬅️ Категории", callback_data="portfolio")]
     ])
 
 
@@ -209,3 +209,35 @@ def build_social_admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✏️ Редактировать текст", callback_data="social_edit")],
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_main")],
     ])
+
+
+def build_reviews_nav_keyboard(photo_idx: int) -> InlineKeyboardMarkup:
+    """Клавиатура навигации для отзывов"""
+    buttons = []
+    # Navigation arrows
+    nav_row = []
+    nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"reviews_pic:{photo_idx}"))
+    nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"reviews_pic:{photo_idx}"))
+    buttons.append(nav_row)
+    
+    # Back to main
+    buttons.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def build_reviews_admin_keyboard() -> InlineKeyboardMarkup:
+    """Админ клавиатура для управления отзывами"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить отзыв", callback_data="reviews_add")],
+        [InlineKeyboardButton(text="🗑 Удалить отзыв", callback_data="reviews_del")],
+        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_main")],
+    ])
+
+
+def build_reviews_delete_keyboard(reviews: list) -> InlineKeyboardMarkup:
+    """Клавиатура для выбора отзыва для удаления"""
+    rows = []
+    for idx, fid in enumerate(reviews):
+        rows.append([InlineKeyboardButton(text=f"#{idx+1}", callback_data=f"reviews_del_idx:{idx}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="reviews")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

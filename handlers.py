@@ -29,6 +29,9 @@ from keyboards import (
     build_confirm_delete_category_kb,
     build_undo_category_delete_kb,
     build_social_admin_keyboard,
+    build_reviews_nav_keyboard,
+    build_reviews_admin_keyboard,
+    build_reviews_delete_keyboard,
     build_undo_photo_delete_kb,
     build_add_photos_in_progress_kb,
     build_confirm_delete_all_photos_kb,
@@ -315,7 +318,42 @@ async def handle_callback(query: CallbackQuery):
         return
     # booking flow handled later (remove early stub)
     if data == "reviews":
-        await query.message.answer("⭐ Отзывы: реальные отклики клиентов и примеры отзывов.")
+        # Get reviews photos from database
+        raw = get_setting('reviews_photos', '[]')
+        try:
+            photos = json.loads(raw)
+            if not isinstance(photos, list):
+                photos = []
+        except Exception:
+            photos = []
+        
+        if photos:
+            import random
+            cycle_key = (query.message.chat.id, 'reviews')
+            seen = SEEN_CATEGORY_PHOTOS.get(cycle_key, set())
+            if len(seen) >= len(photos):
+                seen.clear()
+            available = [i for i in range(len(photos)) if i not in seen]
+            if not available:
+                available = list(range(len(photos)))
+            idx = random.choice(available)
+            fid = photos[idx]
+            caption = f'⭐ Отзыв {idx+1} из {len(photos)}'
+            try:
+                await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption=caption, reply_markup=build_reviews_nav_keyboard(idx))
+                LAST_CATEGORY_PHOTO[(query.message.chat.id, 'reviews')] = idx
+                seen.add(idx)
+                SEEN_CATEGORY_PHOTOS[cycle_key] = seen
+            except Exception:
+                await query.message.answer(f'⭐ Отзывы (ошибка отправки фото)', reply_markup=build_reviews_nav_keyboard(0))
+        else:
+            await query.message.answer('⭐ Отзывы пока не добавлены.')
+        
+        # Show admin controls for admins
+        is_admin = is_admin_view_enabled(username, query.from_user.id)
+        if is_admin:
+            kb = build_reviews_admin_keyboard()
+            await query.message.answer('Управление отзывами:', reply_markup=kb)
         return
     if data == "social":
         # Get social media text from database
@@ -717,6 +755,100 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             return
         ADMIN_PENDING_ACTIONS[username] = {'action': 'edit_social_text', 'payload': {}}
         await query.message.answer('📝 Отправьте новый текст для соцсетей:')
+        return
+
+    # Reviews navigation
+    if data.startswith('reviews_pic:'):
+        parts = data.split(':')
+        if len(parts) >= 2:
+            raw = get_setting('reviews_photos', '[]')
+            try:
+                photos = json.loads(raw)
+                if not isinstance(photos, list):
+                    photos = []
+            except Exception:
+                photos = []
+            
+            if photos:
+                import random
+                chat_key = (query.message.chat.id, 'reviews')
+                last_idx = LAST_CATEGORY_PHOTO.get(chat_key)
+                cycle_key = (query.message.chat.id, 'reviews')
+                seen = SEEN_CATEGORY_PHOTOS.get(cycle_key, set())
+                if last_idx is not None:
+                    seen.add(last_idx)
+                if len(seen) >= len(photos):
+                    seen = set()  # reset cycle
+                remaining = [i for i in range(len(photos)) if i not in seen]
+                if not remaining:
+                    remaining = list(range(len(photos)))
+                idx = random.choice(remaining)
+                fid = photos[idx]
+                caption = f'⭐ Отзыв {idx+1} из {len(photos)}'
+                from aiogram.types import InputMediaPhoto
+                try:
+                    await query.message.edit_media(InputMediaPhoto(media=fid, caption=caption))
+                    await query.message.edit_reply_markup(reply_markup=build_reviews_nav_keyboard(idx))
+                    LAST_CATEGORY_PHOTO[chat_key] = idx
+                    seen.add(idx)
+                    SEEN_CATEGORY_PHOTOS[cycle_key] = seen
+                except Exception:
+                    # fallback new message
+                    await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption=caption, reply_markup=build_reviews_nav_keyboard(idx))
+                    LAST_CATEGORY_PHOTO[chat_key] = idx
+                    seen.add(idx)
+                    SEEN_CATEGORY_PHOTOS[cycle_key] = seen
+        return
+
+    # Reviews admin - add review
+    if data == 'reviews_add':
+        if not is_admin_view_enabled(username, query.from_user.id):
+            await query.message.answer('🚫 Нет доступа.')
+            return
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'add_review', 'payload': {}}
+        await query.message.answer('📝 Отправьте фотографию отзыва:')
+        return
+
+    # Reviews admin - delete review
+    if data == 'reviews_del':
+        if not is_admin_view_enabled(username, query.from_user.id):
+            await query.message.answer('🚫 Нет доступа.')
+            return
+        raw = get_setting('reviews_photos', '[]')
+        try:
+            photos = json.loads(raw)
+            if not isinstance(photos, list):
+                photos = []
+        except Exception:
+            photos = []
+        
+        if not photos:
+            await query.message.answer('Нет отзывов для удаления.')
+            return
+        
+        kb = build_reviews_delete_keyboard(photos)
+        await query.message.answer(f'Выберите отзыв для удаления (всего: {len(photos)}):', reply_markup=kb)
+        return
+
+    # Reviews delete specific review
+    if data.startswith('reviews_del_idx:'):
+        if not is_admin_view_enabled(username, query.from_user.id):
+            await query.message.answer('🚫 Нет доступа.')
+            return
+        parts = data.split(':')
+        if len(parts) >= 2:
+            try:
+                idx = int(parts[1])
+                raw = get_setting('reviews_photos', '[]')
+                photos = json.loads(raw)
+                if 0 <= idx < len(photos):
+                    deleted_id = photos.pop(idx)
+                    set_setting('reviews_photos', json.dumps(photos, ensure_ascii=False))
+                    await query.message.answer(f'✅ Отзыв #{idx+1} удален. Осталось: {len(photos)}')
+                else:
+                    await query.message.answer('Неверный индекс отзыва.')
+            except (ValueError, json.JSONDecodeError):
+                await query.message.answer('Ошибка при удалении отзыва.')
         return
 
     if data == 'back_main':
@@ -1425,6 +1557,29 @@ async def handle_admin_pending(message: Message):
             ADMIN_PENDING_ACTIONS.pop(username, None)
             save_pending_actions(ADMIN_PENDING_ACTIONS)
             await message.answer('✅ Текст соцсетей обновлён.')
+            return
+        
+        if a == 'add_review':
+            if message.photo:
+                raw = get_setting('reviews_photos', '[]')
+                try:
+                    photos = json.loads(raw)
+                    if not isinstance(photos, list):
+                        photos = []
+                except Exception:
+                    photos = []
+                
+                file_id = message.photo[-1].file_id
+                if file_id not in photos:
+                    photos.append(file_id)
+                    set_setting('reviews_photos', json.dumps(photos, ensure_ascii=False))
+                    ADMIN_PENDING_ACTIONS.pop(username, None)
+                    save_pending_actions(ADMIN_PENDING_ACTIONS)
+                    await message.answer(f'✅ Отзыв добавлен! Всего отзывов: {len(photos)}')
+                else:
+                    await message.answer('Этот отзыв уже добавлен.')
+            else:
+                await message.answer('Пожалуйста, отправьте фотографию отзыва.')
             return
             
     # --- Photo/category & menu editing handlers (single consolidated block) ---
