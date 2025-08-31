@@ -241,3 +241,22 @@ def build_reviews_delete_keyboard(reviews: list) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text=f"#{idx+1}", callback_data=f"reviews_del_idx:{idx}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="reviews")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_services_keyboard() -> InlineKeyboardMarkup:
+    """Build keyboard for services menu."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💒 Свадебная", callback_data="wedding_packages")],
+        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
+    ])
+
+
+def build_wedding_packages_nav_keyboard(package_idx: int) -> InlineKeyboardMarkup:
+    """Build navigation keyboard for wedding packages."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="◀️", callback_data=f"wedding_pkg_prev:{package_idx}"),
+            InlineKeyboardButton(text="▶️", callback_data=f"wedding_pkg_next:{package_idx}"),
+        ],
+        [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
+    ])

@@ -35,6 +35,8 @@ from keyboards import (
     build_undo_photo_delete_kb,
     build_add_photos_in_progress_kb,
     build_confirm_delete_all_photos_kb,
+    build_services_keyboard,
+    build_wedding_packages_nav_keyboard,
     ADMIN_USERNAMES,
 )
 
@@ -74,6 +76,90 @@ DEFAULT_PORTFOLIO_CATEGORIES = [
     {"text": "Мама с ребёнком", "slug": "mom_child"},
     {"text": "Крещение", "slug": "baptism"},
     {"text": "Венчание", "slug": "wedding_church"},
+]
+
+# Wedding packages data
+WEDDING_PACKAGES = [
+    {
+        "title": "ПАКЕТ 1",
+        "text": """ПРАЙС СВАДЕБНЫЙ🤵👰
+ПАКЕТ 1 
+ 
+- консультация на этапе подготовки к свадьбе 
+- репортажная и художественная съемка в течении 3-х часов.
+- профессиональная обработка фото:
+15-ретушь
+60-70 цветокоррекция.
+ 
+-превью из 10 фотографий в течении 2-7 дней после свадьбы 
+- получение фото через яндекс диск или на вашем носителе.
+- срок на обработку 2,5 н. - 1 мес.
+
+18000р 
+ 
+* каждый следующий час съемки - 6000 р 
+** в стоимость пакета включен трансфер фотографа на мероприятие и после, во время - передвигается с молодожёнами"""
+    },
+    {
+        "title": "ПАКЕТ 2",
+        "text": """ПРАЙС СВАДЕБНЫЙ🤵👰
+ПАКЕТ 2 
+ 
+- консультация на этапе подготовки к свадьбе 
+- репортажная и художественная съемка в течении 5 часов 
+- профессиональная обработка фото:
+25 - ретушь.
+100-120 цветокоррекция
+- превью из 10 фотографий в течении 7 дней после свадьбы 
+- получение фото через яндекс диск или на вашем носителе ( все обработанные фото )
+- срок на обработку 3 н. - 1,5 мес. ( В зависимости от загруженности).
+
+25.000 р 
+ 
+* каждый следующий час съемки - 5.000 р 
+** в стоимость пакета включен трансфер фотографа на мероприятие и после, во время - передвигается с молодожёнами"""
+    },
+    {
+        "title": "ПАКЕТ 3",
+        "text": """ПРАЙС СВАДЕБНЫЙ🤵👰
+ПАКЕТ 3 
+ 
+- консультация на этапе подготовки к свадьбе 
+- репортажная и художественная съемка в течении 8 часов 
+- профессиональная обработка фото:
+40 - ретушь
+150-160 цветокоррекция
+
+- превью из 10 фотографий в течении недели после свадьбы 
+- получение фото через яндекс диск или на вашем носителе ( все обработанные фото) - срок на обработку 1 - 2 месяц. 
+ 
+35000 р 
+ 
+** каждый следующий час съемки - 6000 р 
+*** в стоимость пакета включен трансфер фотографа на мероприятие и после, во время - передвигается с молодожёнами"""
+    },
+    {
+        "title": "ПАКЕТ 4",
+        "text": """ПРАЙС СВАДЕБНЫЙ🤵👰
+ПАКЕТ 4 
+ 
+"Полный день +" 
+ 
+- консультация на этапе подготовки к свадьбе 
+- репортажная и художественная съёмка в течении 12 часов 
+- профессиональная обработка фото:
+60 ретушь
+300 цветокоррекция.
+- превью из 20 фотографий в течении 10 дней после свадьбы 
+- получение фото через яндекс диск или на вашем носителе ( все обработанные фото)
+- срок на обработку 1,5 - 2,5 месяца. 
+ 
+62.000 р 
+ 
+* съемка LoveStory в ПОДАРОК 
+** каждый следующий час съемки - 6000 р 
+*** в стоимость пакета включен трансфер фотографа на мероприятие и после, во время - передвигается с молодоженами"""
+    }
 ]
 
 # IDs of users for whom we show dynamic booking status button (can be extended)
@@ -314,8 +400,48 @@ async def handle_callback(query: CallbackQuery):
         await query.message.answer("📁 Выберите категорию портфолио:", reply_markup=kb)
         return
     if data == "services":
-        await query.message.answer("💼 Услуги и цены: доступные пакеты, что входит и ориентировочные цены.")
+        kb = build_services_keyboard()
+        await query.message.answer("💼 Услуги и цены: выберите категорию", reply_markup=kb)
         return
+    
+    if data == "wedding_packages":
+        # Show first wedding package
+        package = WEDDING_PACKAGES[0]
+        kb = build_wedding_packages_nav_keyboard(0)
+        await query.message.answer(package["text"], reply_markup=kb)
+        return
+    
+    if data.startswith("wedding_pkg_prev:") or data.startswith("wedding_pkg_next:"):
+        # Handle wedding package navigation
+        try:
+            if data.startswith("wedding_pkg_prev:"):
+                current_idx = int(data.split(":", 1)[1])
+                # Calculate previous index (cycle through packages backwards)
+                next_idx = (current_idx - 1) % len(WEDDING_PACKAGES)
+            else:  # wedding_pkg_next:
+                current_idx = int(data.split(":", 1)[1])
+                # Calculate next index (cycle through packages forward)
+                next_idx = (current_idx + 1) % len(WEDDING_PACKAGES)
+            
+            package = WEDDING_PACKAGES[next_idx]
+            kb = build_wedding_packages_nav_keyboard(next_idx)
+            await query.message.edit_text(package["text"], reply_markup=kb)
+        except (ValueError, IndexError):
+            # Fallback to first package
+            package = WEDDING_PACKAGES[0]
+            kb = build_wedding_packages_nav_keyboard(0)
+            await query.message.edit_text(package["text"], reply_markup=kb)
+        return
+    
+    if data == "main_menu":
+        # Return to main menu
+        menu = get_menu(DEFAULT_MENU)
+        is_admin = is_admin_view_enabled(username, query.from_user.id)
+        keyboard = build_main_keyboard_from_menu(menu, is_admin)
+        keyboard = _inject_booking_status_button(keyboard, query.from_user.id)
+        await query.message.answer("Выберите действие:", reply_markup=keyboard)
+        return
+    
     # booking flow handled later (remove early stub)
     if data == "reviews":
         # Get reviews photos from database
@@ -465,13 +591,16 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             cat_text = next((c.get('text') for c in get_portfolio_categories() if c.get('slug') == slug), slug)
             from aiogram.types import InputMediaPhoto
             try:
+                logging.info("Attempting to edit_media for photo navigation: slug=%s, idx=%s", slug, idx)
                 await query.message.edit_media(InputMediaPhoto(media=fid, caption=f'📸 {cat_text}'))
                 await query.message.edit_reply_markup(reply_markup=build_category_photo_nav_keyboard(slug, idx))
+                logging.info("Successfully edited media for photo navigation")
                 LAST_CATEGORY_PHOTO[chat_key] = idx
                 seen.add(idx)
                 SEEN_CATEGORY_PHOTOS[cycle_key] = seen
-            except Exception:
+            except Exception as e:
                 # fallback new message
+                logging.warning("Failed to edit_media, falling back to new message: %s", e)
                 await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption=f'📸 {cat_text}', reply_markup=build_category_photo_nav_keyboard(slug, idx))
                 LAST_CATEGORY_PHOTO[chat_key] = idx
                 seen.add(idx)
@@ -1765,458 +1894,3 @@ async def handle_admin_pending(message: Message):
         ADMIN_PENDING_ACTIONS.pop(username, None)
         await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
 
-
-@dp.message()
-async def handle_admin_pending(message: Message):
-    username = (message.from_user.username or "").lstrip("@").lower()
-    # allow only if admin mode ON (else ignore silently)
-    if not is_admin_view_enabled(username, message.from_user.id):
-        return
-
-    action = ADMIN_PENDING_ACTIONS.get(username)
-    if not action:
-        return
-
-    if action == 'change_text':
-        if not message.text:
-            await message.answer('Ожидаю текст. Пожалуйста, пришлите новый текст приветствия.')
-            return
-        set_setting('welcome_text', message.text)
-        ADMIN_PENDING_ACTIONS.pop(username, None)
-        await message.answer('✅ Текст приветствия обновлён.')
-        return
-    # menu add/edit & category/photo flows
-    if action and isinstance(action, dict):
-        a = action.get('action')
-        payload = action.get('payload', {})
-        if a == 'new_category':
-            if not message.text:
-                await message.answer('Ожидаю название категории. Попробуйте снова.')
-                return
-            title = message.text.strip()
-            if not title:
-                await message.answer('Название не может быть пустым.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            from utils import normalize_callback
-            slug = normalize_callback(title)
-            cats = get_portfolio_categories()
-            if any(c.get('slug') == slug for c in cats):
-                await message.answer(f'Категория со slug "{slug}" уже существует. Измените название.')
-                return
-            cats.append({'text': title, 'slug': slug})
-            set_setting('portfolio_categories', json.dumps(cats, ensure_ascii=False))
-            folder = Path('media') / 'portfolio' / slug
-            try:
-                folder.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            await message.answer(f'✅ Категория "{title}" создана.')
-            kb = build_portfolio_keyboard(cats, is_admin=True)
-            await message.answer('Обновлённый список категорий:', reply_markup=kb)
-            return
-        if a == 'rename_category':
-            if not message.text:
-                await message.answer('Ожидаю новое название. Попробуйте снова.')
-                return
-            new_title = message.text.strip()
-            if not new_title:
-                await message.answer('Название не может быть пустым.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            slug = payload.get('slug')
-            cats = get_portfolio_categories()
-            cat = next((c for c in cats if c.get('slug') == slug), None)
-            if not cat:
-                await message.answer('Категория не найдена.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            old_title = cat.get('text')
-            cat['text'] = new_title
-            set_setting('portfolio_categories', json.dumps(cats, ensure_ascii=False))
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            await message.answer(f'✅ Категория "{old_title}" переименована в "{new_title}".')
-            kb = build_portfolio_keyboard(cats, is_admin=True)
-            await message.answer('Обновлённый список категорий:', reply_markup=kb)
-            return
-    # (удалён дубликат add_photo_cat – используется обновлённая логика выше)
-    if a == 'add_menu':
-        if not message.text:
-            await message.answer('Ожидаю текст для кнопки. Пришлите текст одним сообщением.')
-            return
-        text = message.text.strip()
-        if not text:
-            await message.answer('Текст не может быть пустым. Отмена.')
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            return
-        callback = normalize_callback(text)
-        menu = get_menu(DEFAULT_MENU)
-        callbacks = {m.get('callback') for m in menu}
-        if callback in callbacks:
-            await message.answer(f'Ошибка: callback "{callback}" уже существует. Измените текст или используйте ручной режим.')
-            return
-        menu.append({'text': text, 'callback': callback})
-        save_menu(menu)
-        ADMIN_PENDING_ACTIONS.pop(username, None)
-        save_pending_actions(ADMIN_PENDING_ACTIONS)
-        await message.answer(f'✅ Кнопка "{text}" добавлена.')
-        return
-    if a == 'add_menu_manual_submit':
-            # expecting payload: {'text': ..., 'callback': ...}
-            text = payload.get('text')
-            callback = payload.get('callback')
-            # If callback not yet provided, treat incoming message as the callback_data
-            if not callback:
-                if not message.text:
-                    await message.answer('Ожидаю callback_data (текст). Отмена.')
-                    ADMIN_PENDING_ACTIONS.pop(username, None)
-                    save_pending_actions(ADMIN_PENDING_ACTIONS)
-                    return
-                callback = normalize_callback(message.text.strip())
-            if not text or not callback:
-                await message.answer('Нет текста или callback_data. Отмена.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            # normalize callback and validate
-            callback = normalize_callback(callback)
-            menu = get_menu(DEFAULT_MENU)
-            callbacks = {m.get('callback') for m in menu}
-            if callback in callbacks:
-                await message.answer(f'Ошибка: callback "{callback}" уже существует. Отмена.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            menu.append({'text': text, 'callback': callback})
-            save_menu(menu)
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            await message.answer(f'✅ Кнопка "{text}" с callback "{callback}" добавлена.')
-            return
-    if a == 'edit_menu':
-            idx = payload.get('idx')
-            if idx is None:
-                await message.answer('Нет индекса для редактирования.')
-                return
-            if not message.text:
-                await message.answer('Ожидаю текст для обновления кнопки.')
-                return
-            menu = get_menu(DEFAULT_MENU)
-            if idx < 0 or idx >= len(menu):
-                await message.answer('Индекс вне диапазона.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                return
-            new_text = message.text.strip()
-            if not new_text:
-                await message.answer('Текст не может быть пустым. Отмена.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            # check that new callback (derived) won't duplicate existing callbacks, unless it's the same button
-            new_callback = normalize_callback(new_text)
-            current_callback = menu[idx].get('callback')
-            callbacks = {i for i in (m.get('callback') for m in menu) if i}
-            if new_callback != current_callback and new_callback in callbacks:
-                await message.answer(f'Ошибка: при преобразовании текста в callback "{new_callback}" обнаружен дубликат. Используйте ручное редактирование.')
-                return
-            old = menu[idx].get('text')
-            menu[idx]['text'] = new_text
-            save_menu(menu)
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            await message.answer(f'✅ Кнопка "{old}" -> "{menu[idx]["text"]}" обновлена.')
-            return
-    if a == 'edit_callback':
-            idx = payload.get('idx')
-            if idx is None:
-                await message.answer('Нет индекса для редактирования callback.')
-                return
-            if not message.text:
-                await message.answer('Ожидаю текст с новым callback_data.')
-                return
-            new_cb = normalize_callback(message.text.strip())
-            menu = get_menu(DEFAULT_MENU)
-            if idx < 0 or idx >= len(menu):
-                await message.answer('Индекс вне диапазона.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            callbacks = {m.get('callback') for m in menu}
-            current_cb = menu[idx].get('callback')
-            if new_cb != current_cb and new_cb in callbacks:
-                await message.answer(f'Ошибка: callback "{new_cb}" уже используется. Выберите другой.')
-                return
-            menu[idx]['callback'] = new_cb
-            save_menu(menu)
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            await message.answer(f'✅ callback для "{menu[idx].get("text")}" обновлён -> "{new_cb}"')
-            return
-    elif action == 'change_image':
-        photo = None
-        if message.photo:
-            photo = message.photo[-1]
-        elif message.document and message.document.mime_type.startswith('image'):
-            file_id = message.document.file_id
-            set_setting('welcome_image_file_id', file_id)
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
-            return
-
-        if not photo:
-            await message.answer('Ожидаю изображение (photo). Пришлите, пожалуйста, картинку.')
-            return
-
-        file_id = photo.file_id
-        set_setting('welcome_image_file_id', file_id)
-        ADMIN_PENDING_ACTIONS.pop(username, None)
-        await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
-
-
-@dp.message()
-async def handle_admin_pending(message: Message):
-    username = (message.from_user.username or "").lstrip("@").lower()
-    # allow only if admin mode ON (else ignore silently)
-    if not is_admin_view_enabled(username, message.from_user.id):
-        return
-
-    action = ADMIN_PENDING_ACTIONS.get(username)
-    if not action:
-        return
-
-    if action == 'change_text':
-        if not message.text:
-            await message.answer('Ожидаю текст. Пожалуйста, пришлите новый текст приветствия.')
-            return
-        set_setting('welcome_text', message.text)
-        ADMIN_PENDING_ACTIONS.pop(username, None)
-        await message.answer('✅ Текст приветствия обновлён.')
-        return
-    # menu add/edit & category/photo flows
-    if action and isinstance(action, dict):
-        a = action.get('action')
-        payload = action.get('payload', {})
-        if a == 'new_category':
-            if not message.text:
-                await message.answer('Ожидаю название категории. Попробуйте снова.')
-                return
-            title = message.text.strip()
-            if not title:
-                await message.answer('Название не может быть пустым.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            from utils import normalize_callback
-            slug = normalize_callback(title)
-            cats = get_portfolio_categories()
-            if any(c.get('slug') == slug for c in cats):
-                await message.answer(f'Категория со slug "{slug}" уже существует. Измените название.')
-                return
-            cats.append({'text': title, 'slug': slug})
-            set_setting('portfolio_categories', json.dumps(cats, ensure_ascii=False))
-            folder = Path('media') / 'portfolio' / slug
-            try:
-                folder.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            await message.answer(f'✅ Категория "{title}" создана.')
-            kb = build_portfolio_keyboard(cats, is_admin=True)
-            await message.answer('Обновлённый список категорий:', reply_markup=kb)
-            return
-        if a == 'rename_category':
-            if not message.text:
-                await message.answer('Ожидаю новое название. Попробуйте снова.')
-                return
-            new_title = message.text.strip()
-            if not new_title:
-                await message.answer('Название не может быть пустым.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            slug = payload.get('slug')
-            cats = get_portfolio_categories()
-            cat = next((c for c in cats if c.get('slug') == slug), None)
-            if not cat:
-                await message.answer('Категория не найдена.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            old_title = cat.get('text')
-            cat['text'] = new_title
-            set_setting('portfolio_categories', json.dumps(cats, ensure_ascii=False))
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            await message.answer(f'✅ Категория "{old_title}" переименована в "{new_title}".')
-            kb = build_portfolio_keyboard(cats, is_admin=True)
-            await message.answer('Обновлённый список категорий:', reply_markup=kb)
-            return
-    # (duplicate add_photo_cat handler removed – unified implementation earlier)
-    if a == 'add_menu':
-            # message.text -> text for new button; generate callback from slug
-            if not message.text:
-                await message.answer('Ожидаю текст для кнопки. Пришлите текст одним сообщением.')
-                return
-            text = message.text.strip()
-            if not text:
-                await message.answer('Текст не может быть пустым. Отмена.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            callback = normalize_callback(text)
-            menu = get_menu(DEFAULT_MENU)
-            # check duplicate callbacks
-            callbacks = {m.get('callback') for m in menu}
-            if callback in callbacks:
-                await message.answer(f'Ошибка: callback "{callback}" уже существует. Измените текст или используйте ручной режим.')
-                return
-            menu.append({'text': text, 'callback': callback})
-            save_menu(menu)
-            try:
-                pass
-            except Exception:
-                pass
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            await message.answer(f'✅ Кнопка "{text}" добавлена.')
-            return
-    if a == 'add_menu_manual':
-            # first step: we expect the text for the button, then ask for callback_data
-            if not message.text:
-                await message.answer('Ожидаю текст для кнопки. Пришлите текст одним сообщением.')
-                return
-            text = message.text.strip()
-            if not text:
-                await message.answer('Текст не может быть пустым. Отмена.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            # store text in payload and ask for callback_data
-            ADMIN_PENDING_ACTIONS[username] = {'action': 'add_menu_manual_submit', 'payload': {'text': text}}
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            await message.answer('Теперь пришлите желаемый callback_data для этой кнопки (латиница, цифры, подчеркивания).')
-            return
-    if a == 'add_menu_manual_submit':
-            # expecting payload: {'text': ..., 'callback': ...}
-            text = payload.get('text')
-            callback = payload.get('callback')
-            # If callback not yet provided, treat incoming message as the callback_data
-            if not callback:
-                if not message.text:
-                    await message.answer('Ожидаю callback_data (текст). Отмена.')
-                    ADMIN_PENDING_ACTIONS.pop(username, None)
-                    save_pending_actions(ADMIN_PENDING_ACTIONS)
-                    return
-                callback = normalize_callback(message.text.strip())
-            if not text or not callback:
-                await message.answer('Нет текста или callback_data. Отмена.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            # normalize callback and validate
-            callback = normalize_callback(callback)
-            menu = get_menu(DEFAULT_MENU)
-            callbacks = {m.get('callback') for m in menu}
-            if callback in callbacks:
-                await message.answer(f'Ошибка: callback "{callback}" уже существует. Отмена.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            menu.append({'text': text, 'callback': callback})
-            save_menu(menu)
-            try:
-                pass
-            except Exception:
-                pass
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            await message.answer(f'✅ Кнопка "{text}" с callback "{callback}" добавлена.')
-            return
-    if a == 'edit_menu':
-            idx = payload.get('idx')
-            if idx is None:
-                await message.answer('Нет индекса для редактирования.')
-                return
-            if not message.text:
-                await message.answer('Ожидаю текст для обновления кнопки.')
-                return
-            menu = get_menu(DEFAULT_MENU)
-            if idx < 0 or idx >= len(menu):
-                await message.answer('Индекс вне диапазона.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                return
-            new_text = message.text.strip()
-            if not new_text:
-                await message.answer('Текст не может быть пустым. Отмена.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            # check that new callback (derived) won't duplicate existing callbacks, unless it's the same button
-            new_callback = normalize_callback(new_text)
-            current_callback = menu[idx].get('callback')
-            callbacks = {i for i in (m.get('callback') for m in menu) if i}
-            if new_callback != current_callback and new_callback in callbacks:
-                await message.answer(f'Ошибка: при преобразовании текста в callback "{new_callback}" обнаружен дубликат. Используйте ручное редактирование.')
-                return
-            old = menu[idx].get('text')
-            menu[idx]['text'] = new_text
-            save_menu(menu)
-            try:
-                pass
-            except Exception:
-                pass
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            await message.answer(f'✅ Кнопка "{old}" -> "{menu[idx]["text"]}" обновлена.')
-            return
-    if a == 'edit_callback':
-            idx = payload.get('idx')
-            if idx is None:
-                await message.answer('Нет индекса для редактирования callback.')
-                return
-            if not message.text:
-                await message.answer('Ожидаю текст с новым callback_data.')
-                return
-            new_cb = normalize_callback(message.text.strip())
-            menu = get_menu(DEFAULT_MENU)
-            if idx < 0 or idx >= len(menu):
-                await message.answer('Индекс вне диапазона.')
-                ADMIN_PENDING_ACTIONS.pop(username, None)
-                save_pending_actions(ADMIN_PENDING_ACTIONS)
-                return
-            callbacks = {m.get('callback') for m in menu}
-            current_cb = menu[idx].get('callback')
-            if new_cb != current_cb and new_cb in callbacks:
-                await message.answer(f'Ошибка: callback "{new_cb}" уже используется. Выберите другой.')
-                return
-            menu[idx]['callback'] = new_cb
-            save_menu(menu)
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            save_pending_actions(ADMIN_PENDING_ACTIONS)
-            await message.answer(f'✅ callback для "{menu[idx].get("text")}" обновлён -> "{new_cb}"')
-            return
-    elif action == 'change_image':
-        photo = None
-        if message.photo:
-            photo = message.photo[-1]
-        elif message.document and message.document.mime_type.startswith('image'):
-            file_id = message.document.file_id
-            set_setting('welcome_image_file_id', file_id)
-            ADMIN_PENDING_ACTIONS.pop(username, None)
-            await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
-            return
-
-        if not photo:
-            await message.answer('Ожидаю изображение (photo). Пришлите, пожалуйста, картинку.')
-            return
-
-        file_id = photo.file_id
-        set_setting('welcome_image_file_id', file_id)
-        ADMIN_PENDING_ACTIONS.pop(username, None)
-        await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
