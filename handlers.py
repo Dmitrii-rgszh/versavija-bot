@@ -3,6 +3,7 @@ import pathlib
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 # track last shown photo index per chat+category to avoid repeats
 LAST_CATEGORY_PHOTO: dict[tuple[int, str], int] = {}
@@ -161,6 +162,28 @@ WEDDING_PACKAGES = [
 *** в стоимость пакета включен трансфер фотографа на мероприятие и после, во время - передвигается с молодоженами"""
     }
 ]
+
+# Lingerie service information
+LINGERIE_SERVICE = {
+    "title": "Lingerie (будуарная)",
+    "text": """💋 Lingerie (будуарная).
+
+                         7.000
+
+1 час фотосъемки.
+2 образа
+Консультация на этапе подготовке к съемке
+Подбор мест для фотосессий 
+30-35 кадров в авторской обработке
+10 кадров в ретуши.
+Я помогу вам с подбором стилизации фотосессии и позированием
+Аренда студии оплачивается отдельно 
+Закрытый доступ к фотографиям на облачном диске
+ 
+❗️Бронь фотосессии осуществляется после предоплаты.
+
+Готовые фотографии в течение 14 рабочих дня."""
+}
 
 # IDs of users for whom we show dynamic booking status button (can be extended)
 def _load_booking_status_user_ids() -> set[int]:
@@ -361,7 +384,7 @@ async def handle_callback(query: CallbackQuery):
         pass
 
     # helper: resolve an identifier (either numeric index or item callback) to index
-    def resolve_idx(token: str) -> int | None:
+    def resolve_idx(token: str) -> Optional[int]:
         """token may be '123' or '::ident' or 'ident' depending on keyboard; return index or None"""
         menu = get_menu(DEFAULT_MENU)
         # strip possible '::' prefix
@@ -409,6 +432,14 @@ async def handle_callback(query: CallbackQuery):
         package = WEDDING_PACKAGES[0]
         kb = build_wedding_packages_nav_keyboard(0)
         await query.message.answer(package["text"], reply_markup=kb)
+        return
+    
+    if data == "lingerie_service":
+        # Show lingerie service information
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
+        ])
+        await query.message.answer(LINGERIE_SERVICE["text"], reply_markup=kb)
         return
     
     if data.startswith("wedding_pkg_prev:") or data.startswith("wedding_pkg_next:"):
@@ -1017,7 +1048,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
     # --- Booking flow ---
     from datetime import datetime, timedelta, timezone
     BOOK_TZ = timezone.utc
-    async def _send_booking_step(q: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None):
+    async def _send_booking_step(q: CallbackQuery, text: str, kb: Optional[InlineKeyboardMarkup] = None):
         """Show next booking step using a single reusable message.
 
         Strategy:

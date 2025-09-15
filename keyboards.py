@@ -1,4 +1,5 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from typing import Optional
 
 ADMIN_USERNAMES = {"versavija", "dmitrii_poliakov"}
 
@@ -154,7 +155,7 @@ def build_main_keyboard_from_menu(menu: list, is_admin: bool) -> InlineKeyboardM
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_panel_keyboard(admin_mode_on: bool | None = None) -> InlineKeyboardMarkup:
+def admin_panel_keyboard(admin_mode_on: Optional[bool] = None) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="Изменить текст приветствия", callback_data="admin_change_text")],
         [InlineKeyboardButton(text="Изменить картинку приветствия", callback_data="admin_change_image")],
@@ -247,6 +248,7 @@ def build_services_keyboard() -> InlineKeyboardMarkup:
     """Build keyboard for services menu."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💒 Свадебная", callback_data="wedding_packages")],
+        [InlineKeyboardButton(text="💋 Lingerie (будуарная)", callback_data="lingerie_service")],
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
     ])
 
