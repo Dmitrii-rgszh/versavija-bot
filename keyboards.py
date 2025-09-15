@@ -250,6 +250,11 @@ def build_services_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💒 Свадебная", callback_data="wedding_packages")],
         [InlineKeyboardButton(text="💋 Lingerie (будуарная)", callback_data="lingerie_service")],
         [InlineKeyboardButton(text="📸 Репортажная", callback_data="reportage_service")],
+        [InlineKeyboardButton(text="👤 Индивидуальная", callback_data="individual_service")],
+        [InlineKeyboardButton(text="👩‍👶 Мама и ребенок", callback_data="mom_child_service")],
+        [InlineKeyboardButton(text="💕 Love Story", callback_data="love_story_service")],
+        [InlineKeyboardButton(text="👨‍👩‍👧‍👦 Семейная", callback_data="family_service")],
+        [InlineKeyboardButton(text="🧒 Детская (садики/школы)", callback_data="children_service")],
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
     ])
 

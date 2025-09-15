@@ -190,7 +190,7 @@ REPORTAGE_SERVICE = {
     "title": "Репортажная",
     "text": """📸 Репортажная 
 
-От 3.000 за час
+От 3.000 рублей за час
 В зависимости от места проведения фотосессии.
 От 30 и до 50 в авторской обработке.
 5 кадров в ретуши.
@@ -199,6 +199,53 @@ REPORTAGE_SERVICE = {
 ❗️Бронь фотосессии осуществляется после предоплаты.
 
 Готовые фотографии в течение 14 рабочих дня."""
+}
+
+# Common service text for individual categories
+_COMMON_SERVICE_TEXT = """Прайс
+5.000 рублей
+
+1 час фотосъемки.
+2 образа
+Консультация на этапе подготовке к съемке
+Подбор мест для фотосессий
+30-35 кадров в авторской обработке
+5 кадра в ретуши.
+Я помогу вам с подбором стилизации фотосессии и позированием
+Аренда студии оплачивается отдельно
+Закрытый доступ к фотографиям на облачном диске
+
+❗️Бронь фотосессии осуществляется после предоплаты.
+Готовые фотографии в течение 14 рабочих дня."""
+
+# Individual service information
+INDIVIDUAL_SERVICE = {
+    "title": "Индивидуальная",
+    "text": f"👤 Индивидуальная\n\n{_COMMON_SERVICE_TEXT}"
+}
+
+# Mom and child service information
+MOM_CHILD_SERVICE = {
+    "title": "Мама и ребенок",
+    "text": f"👩‍👶 Мама и ребенок\n\n{_COMMON_SERVICE_TEXT}"
+}
+
+# Love story service information
+LOVE_STORY_SERVICE = {
+    "title": "Love Story",
+    "text": f"💕 Love Story\n\n{_COMMON_SERVICE_TEXT}"
+}
+
+# Family service information
+FAMILY_SERVICE = {
+    "title": "Семейная",
+    "text": f"👨‍👩‍👧‍👦 Семейная\n\n{_COMMON_SERVICE_TEXT}"
+}
+
+# Children service information
+CHILDREN_SERVICE = {
+    "title": "Детская (садики/школы)",
+    "text": f"🧒 Детская (садики/школы)\n\n{_COMMON_SERVICE_TEXT}"
 }
 
 # IDs of users for whom we show dynamic booking status button (can be extended)
@@ -464,6 +511,46 @@ async def handle_callback(query: CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
         ])
         await query.message.answer(REPORTAGE_SERVICE["text"], reply_markup=kb)
+        return
+    
+    if data == "individual_service":
+        # Show individual service information
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
+        ])
+        await query.message.answer(INDIVIDUAL_SERVICE["text"], reply_markup=kb)
+        return
+    
+    if data == "mom_child_service":
+        # Show mom and child service information
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
+        ])
+        await query.message.answer(MOM_CHILD_SERVICE["text"], reply_markup=kb)
+        return
+    
+    if data == "love_story_service":
+        # Show love story service information
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
+        ])
+        await query.message.answer(LOVE_STORY_SERVICE["text"], reply_markup=kb)
+        return
+    
+    if data == "family_service":
+        # Show family service information
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
+        ])
+        await query.message.answer(FAMILY_SERVICE["text"], reply_markup=kb)
+        return
+    
+    if data == "children_service":
+        # Show children service information
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
+        ])
+        await query.message.answer(CHILDREN_SERVICE["text"], reply_markup=kb)
         return
     
     if data.startswith("wedding_pkg_prev:") or data.startswith("wedding_pkg_next:"):
