@@ -249,6 +249,7 @@ def build_services_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💒 Свадебная", callback_data="wedding_packages")],
         [InlineKeyboardButton(text="💋 Lingerie (будуарная)", callback_data="lingerie_service")],
+        [InlineKeyboardButton(text="📸 Репортажная", callback_data="reportage_service")],
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
     ])
 

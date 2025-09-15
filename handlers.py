@@ -168,7 +168,7 @@ LINGERIE_SERVICE = {
     "title": "Lingerie (будуарная)",
     "text": """💋 Lingerie (будуарная).
 
-                         7.000
+7.000 рублей
 
 1 час фотосъемки.
 2 образа
@@ -180,6 +180,22 @@ LINGERIE_SERVICE = {
 Аренда студии оплачивается отдельно 
 Закрытый доступ к фотографиям на облачном диске
  
+❗️Бронь фотосессии осуществляется после предоплаты.
+
+Готовые фотографии в течение 14 рабочих дня."""
+}
+
+# Reportage service information  
+REPORTAGE_SERVICE = {
+    "title": "Репортажная",
+    "text": """📸 Репортажная 
+
+От 3.000 за час
+В зависимости от места проведения фотосессии.
+От 30 и до 50 в авторской обработке.
+5 кадров в ретуши.
+Закрытый доступ к фотографиям на облачном диске.
+
 ❗️Бронь фотосессии осуществляется после предоплаты.
 
 Готовые фотографии в течение 14 рабочих дня."""
@@ -440,6 +456,14 @@ async def handle_callback(query: CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
         ])
         await query.message.answer(LINGERIE_SERVICE["text"], reply_markup=kb)
+        return
+    
+    if data == "reportage_service":
+        # Show reportage service information
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
+        ])
+        await query.message.answer(REPORTAGE_SERVICE["text"], reply_markup=kb)
         return
     
     if data.startswith("wedding_pkg_prev:") or data.startswith("wedding_pkg_next:"):
