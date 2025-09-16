@@ -37,8 +37,20 @@ param(
 )
 
 if (-not $BotToken) {
-  $BotToken = Read-Host -AsSecureString -Prompt 'Введите BOT_TOKEN';
-  $BotToken = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($BotToken))
+  # Try to read from .env file first
+  if (Test-Path '.env') {
+    $envContent = Get-Content '.env' -Raw
+    if ($envContent -match 'BOT_TOKEN=(.+)') {
+      $BotToken = $matches[1].Trim()
+      Write-Host "Токен найден в .env файле" -ForegroundColor Green
+    }
+  }
+  
+  # If still not found, ask interactively
+  if (-not $BotToken) {
+    $BotToken = Read-Host -AsSecureString -Prompt 'Введите BOT_TOKEN';
+    $BotToken = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($BotToken))
+  }
 }
 
 $Image = [string]::Format('{0}:{1}', $Repo, $Tag)
@@ -69,7 +81,7 @@ $envDest = [string]::Format('{0}:{1}/.env', $sshTarget, $RemoteDir)
 scp $tmpEnv $envDest || throw 'Не удалось скопировать .env'
 
 Write-Host "[6/8] Запуск / обновление compose на сервере" -ForegroundColor Cyan
-ssh $RemoteUser@$RemoteHost "cd $RemoteDir && docker pull $Image && docker compose up -d"
+ssh $RemoteUser@$RemoteHost "cd $RemoteDir && docker pull $Image && docker-compose up -d"
 
 Write-Host "[7/8] Проверка логов (10 строк)" -ForegroundColor Cyan
 ssh $RemoteUser@$RemoteHost "docker logs --tail 10 versavija-bot 2>/dev/null || true"

@@ -25,14 +25,38 @@ def build_portfolio_keyboard(categories: list, page: int = 0, page_size: int = 6
 
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
+    
+    # Define long category texts that should be placed alone in row
+    LONG_CATEGORIES = [
+        "Репортажная (банкеты, мероприятия)",
+        "Lingerie (будуарная)",
+        "Детская (школы/садики)",
+        "Мама с ребёнком",
+    ]
+    
     for cat in slice_items:
         text = cat.get('text', 'Категория')
         slug = cat.get('slug') or text
         btn = InlineKeyboardButton(text=text, callback_data=f"pf:{slug}")
-        row.append(btn)
-        if len(row) == 2:
-            rows.append(row)
-            row = []
+        
+        # Check if this is a long category that should be alone
+        is_long_category = any(long_cat in text for long_cat in LONG_CATEGORIES)
+        
+        if is_long_category:
+            # If current row has items, close it first
+            if row:
+                rows.append(row)
+                row = []
+            # Add long category alone in its row
+            rows.append([btn])
+        else:
+            # Add to current row
+            row.append(btn)
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+    
+    # Add remaining buttons in row if any
     if row:
         rows.append(row)
 
@@ -126,15 +150,30 @@ def build_add_photos_in_progress_kb(slug: str, count: int) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Добавлено {count}", callback_data="noop")]])
 
 
-def build_category_photo_nav_keyboard(slug: str, idx: int) -> InlineKeyboardMarkup:
+def build_category_photo_nav_keyboard(slug: str, idx: int, user_id: int = None, likes_count: int = 0, user_has_liked: bool = False) -> InlineKeyboardMarkup:
     """Keyboard for navigating photos inside a category (random shuffle on each click). idx is current photo index."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
+    buttons = []
+    
+    # Navigation row with like button in the middle
+    if user_id is not None:
+        # Always show red heart, regardless of like status
+        like_text = f"❤️ {likes_count}"
+        buttons.append([
+            InlineKeyboardButton(text="◀️", callback_data=f"pf_pic:{slug}:{idx}"),
+            InlineKeyboardButton(text=like_text, callback_data=f"like:{slug}:{idx}"),
+            InlineKeyboardButton(text="▶️", callback_data=f"pf_pic:{slug}:{idx}"),
+        ])
+    else:
+        # Navigation row without like button
+        buttons.append([
             InlineKeyboardButton(text="◀️", callback_data=f"pf_pic:{slug}:{idx}"),
             InlineKeyboardButton(text="▶️", callback_data=f"pf_pic:{slug}:{idx}"),
-        ],
-        [InlineKeyboardButton(text="⬅️ Категории", callback_data="portfolio")]
-    ])
+        ])
+    
+    # Back button row
+    buttons.append([InlineKeyboardButton(text="⬅️ Категории", callback_data="portfolio")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def build_main_keyboard_from_menu(menu: list, is_admin: bool) -> InlineKeyboardMarkup:
@@ -157,51 +196,12 @@ def build_main_keyboard_from_menu(menu: list, is_admin: bool) -> InlineKeyboardM
 
 def admin_panel_keyboard(admin_mode_on: Optional[bool] = None) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="Изменить картинку приветствия", callback_data="admin_change_image")],
-        [InlineKeyboardButton(text="Управление меню", callback_data="admin_manage_menu")],
-        [InlineKeyboardButton(text="Просмотреть структуру меню", callback_data="view_menu")],
         [InlineKeyboardButton(text="📢 Рассылка сообщений", callback_data="admin_broadcast")],
     ]
     if admin_mode_on is not None:
         toggle_text = "👁 Режим администратора: ВЫКЛ (включить)" if not admin_mode_on else "👁 Режим администратора: ВКЛ (выключить)"
         rows.append([InlineKeyboardButton(text=toggle_text, callback_data="toggle_admin_mode")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def build_menu_edit_kb(menu: list) -> InlineKeyboardMarkup:
-    """Build keyboard for editing menu: each button has callback edit_menu:idx and delete_menu:idx"""
-    rows = []
-    for idx, item in enumerate(menu):
-        # use stable per-item identifier (callback field) so actions survive reorders
-        ident = item.get('callback') or f'btn{idx}'
-        # show text + edit callback button + delete + move up/down
-        rows.append([
-            InlineKeyboardButton(text=f"✏️ {item.get('text','btn')}", callback_data=f"edit_menu::{ident}"),
-            InlineKeyboardButton(text="🔧 callback", callback_data=f"edit_callback::{ident}"),
-        ])
-        rows.append([
-            InlineKeyboardButton(text="️ Удалить", callback_data=f"prompt_delete::{ident}"),
-            InlineKeyboardButton(text="⬆️", callback_data=f"move_up::{ident}"),
-            InlineKeyboardButton(text="⬇️", callback_data=f"move_down::{ident}"),
-        ])
-    # controls: add new, back
-    rows.append([
-        InlineKeyboardButton(text="➕ Добавить кнопку", callback_data="add_menu"),
-        InlineKeyboardButton(text="➕ Ручной режим", callback_data="add_menu_manual"),
-    ])
-    rows.append([
-        InlineKeyboardButton(text="Сортировать (дефолты сначала)", callback_data="sort_defaults_first"),
-        InlineKeyboardButton(text="◀️ Назад", callback_data="admin"),
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def build_confirm_delete_kb(idx: int) -> InlineKeyboardMarkup:
-    # idx may be numeric index or an identifier; caller should pass the same identifier used in prompt
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete::{idx}")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_delete")],
-    ])
 
 
 def build_social_admin_keyboard() -> InlineKeyboardMarkup:
@@ -247,7 +247,7 @@ def build_reviews_delete_keyboard(reviews: list) -> InlineKeyboardMarkup:
 def build_services_keyboard() -> InlineKeyboardMarkup:
     """Build keyboard for services menu."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💒 Свадебная", callback_data="wedding_packages")],
+        [InlineKeyboardButton(text="� Свадебная", callback_data="wedding_packages")],
         [InlineKeyboardButton(text="💋 Lingerie (будуарная)", callback_data="lingerie_service")],
         [InlineKeyboardButton(text="📸 Репортажная", callback_data="reportage_service")],
         [InlineKeyboardButton(text="👤 Индивидуальная", callback_data="individual_service")],
@@ -294,11 +294,8 @@ def build_promotions_keyboard(promotion_idx: int = 0, is_admin: bool = False) ->
     
     # Admin buttons
     if is_admin:
-        admin_row = [
-            InlineKeyboardButton(text="➕ Добавить акцию", callback_data="add_promotion"),
-            InlineKeyboardButton(text="🗑 Удалить эту акцию", callback_data=f"delete_promotion:{promotion_idx}")
-        ]
-        buttons.append(admin_row)
+        buttons.append([InlineKeyboardButton(text="➕ Добавить акцию", callback_data="add_promotion")])
+        buttons.append([InlineKeyboardButton(text="🗑 Удалить эту акцию", callback_data=f"delete_promotion:{promotion_idx}")])
     
     # Back button
     buttons.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")])

@@ -53,6 +53,19 @@ def init_db() -> None:
         created_at TEXT DEFAULT (datetime('now'))
     )''')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_promotions_dates ON promotions(start_date, end_date)')
+    
+    # Create photo_likes table for portfolio photo likes
+    cur.execute('''CREATE TABLE IF NOT EXISTS photo_likes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_slug TEXT NOT NULL,
+        photo_index INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        liked_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(category_slug, photo_index, user_id)
+    )''')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_photo_likes ON photo_likes(category_slug, photo_index)')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_photo_likes_user ON photo_likes(user_id)')
+    
     con.commit()
     con.close()
 
@@ -300,6 +313,60 @@ def delete_promotion(promotion_id: int):
     cur.execute('DELETE FROM promotions WHERE id = ?', (promotion_id,))
     con.commit()
     con.close()
+
+
+# Photo likes functions
+def toggle_photo_like(category_slug: str, photo_index: int, user_id: int) -> bool:
+    """Toggle like for a photo by user. Returns True if like was added, False if removed."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    
+    # Check if user already liked this photo
+    cur.execute('''SELECT id FROM photo_likes 
+                   WHERE category_slug = ? AND photo_index = ? AND user_id = ?''',
+                (category_slug, photo_index, user_id))
+    existing = cur.fetchone()
+    
+    if existing:
+        # Remove like
+        cur.execute('''DELETE FROM photo_likes 
+                       WHERE category_slug = ? AND photo_index = ? AND user_id = ?''',
+                    (category_slug, photo_index, user_id))
+        con.commit()
+        con.close()
+        return False
+    else:
+        # Add like
+        cur.execute('''INSERT INTO photo_likes (category_slug, photo_index, user_id) 
+                       VALUES (?, ?, ?)''',
+                    (category_slug, photo_index, user_id))
+        con.commit()
+        con.close()
+        return True
+
+
+def get_photo_likes_count(category_slug: str, photo_index: int) -> int:
+    """Get total number of likes for a photo."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('''SELECT COUNT(*) FROM photo_likes 
+                   WHERE category_slug = ? AND photo_index = ?''',
+                (category_slug, photo_index))
+    count = cur.fetchone()[0]
+    con.close()
+    return count
+
+
+def user_has_liked_photo(category_slug: str, photo_index: int, user_id: int) -> bool:
+    """Check if user has liked a specific photo."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('''SELECT id FROM photo_likes 
+                   WHERE category_slug = ? AND photo_index = ? AND user_id = ?''',
+                (category_slug, photo_index, user_id))
+    result = cur.fetchone()
+    con.close()
+    return result is not None
 
 
 def cleanup_expired_promotions():

@@ -3,22 +3,23 @@ import pathlib
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 # track last shown photo index per chat+category to avoid repeats
 LAST_CATEGORY_PHOTO: dict[tuple[int, str], int] = {}
+# track set of already shown indices for cycle (chat, category)
+SEEN_CATEGORY_PHOTOS: dict[tuple[int, str], set] = {}
 from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from aiogram.filters import Command
 
 from config import bot, dp, ADMIN_IDS
 from db import get_setting, set_setting, get_menu, save_menu, get_pending_actions, save_pending_actions
 from db import add_booking, is_slot_taken, get_bookings_between, get_booking, update_booking_status, clear_all_bookings
-from db import get_active_booking_for_user, update_booking_time_and_category, add_user, get_all_users
-from db import add_promotion, get_active_promotions, get_all_promotions, delete_promotion, cleanup_expired_promotions
-from db import toggle_photo_like, get_photo_likes_count, user_has_liked_photo
+from db import get_active_booking_for_user, update_booking_time_and_category
 from keyboards import (
     build_main_keyboard_from_menu,
     admin_panel_keyboard,
+    build_menu_edit_kb,
+    build_confirm_delete_kb,
     build_portfolio_keyboard,
     build_category_admin_keyboard,
     build_category_delete_keyboard,
@@ -36,11 +37,6 @@ from keyboards import (
     build_confirm_delete_all_photos_kb,
     build_services_keyboard,
     build_wedding_packages_nav_keyboard,
-    broadcast_confirm_keyboard,
-    build_promotions_keyboard,
-    build_add_promotion_keyboard,
-    build_promotion_date_keyboard,
-    build_promotion_image_keyboard,
     ADMIN_USERNAMES,
 )
 
@@ -51,43 +47,35 @@ UNDO_DELETED_CATEGORY_PHOTOS: dict[str, list] = {}
 UNDO_DELETED_PHOTO: dict[str, str] = {}
 
 WELCOME_TEXT = (
-    "👇 Выберите действие:"
+    "👋 Приветствуем в официальном Telegram-боте профессионального фотографа!\n\n"
+    "📸 Здесь вы можете ознакомиться с портфолио, выбрать оптимальный пакет услуг и записаться онлайн на фотосессию.\n\n"
+    "✨ Погрузитесь в мир качественной фотографии, подчеркните свою индивидуальность и сохраните лучшие моменты жизни!\n\n"
+    "🔎 Удобный выбор пакетов, прозрачные цены и быстрая запись — всё для вашего комфорта.\n\n"
+    "💬 Начните прямо сейчас: выберите интересующий пакет и забронируйте дату фотосессии!\n\n"
+    "#фотограф #фотосессия #портфолио #онлайнзапись #фотосъемка #услугифотографа"
 )
-
-# Единые сообщения для меню с эмодзи 👇
-MENU_MESSAGES = {
-    "main": "👇 Выберите действие:",
-    "portfolio": "👇 Выберите категорию портфолио:",
-    "services": "👇 Выберите категорию услуг:",
-    "booking": "👇 Выберите категорию фотосессии:",
-    "admin": "👇 Выберите действие администрирования:",
-    "delete_photo": "👇 Выберите фото для удаления:",
-    "delete_review": "👇 Выберите отзыв для удаления:",
-    "select_date": "👇 Выберите дату:",
-}
 
 # default menu used when DB has no saved menu
 DEFAULT_MENU = [
-    {"text": "📸 Портфолио", "callback": "portfolio"},
-    {"text": "💰 Услуги и цены", "callback": "services"},
-    {"text": "📅 Онлайн-запись", "callback": "booking"},
-    {"text": "🎉 Акции", "callback": "promotions"},
-    {"text": "⭐ Отзывы", "callback": "reviews"},
-    {"text": "📱 Соцсети", "callback": "social"},
+    {"text": "Портфолио", "callback": "portfolio"},
+    {"text": "Услуги и цены", "callback": "services"},
+    {"text": "Онлайн-запись", "callback": "booking"},
+    {"text": "Отзывы", "callback": "reviews"},
+    {"text": "Соцсети", "callback": "social"},
 ]
 
 # default portfolio categories
 DEFAULT_PORTFOLIO_CATEGORIES = [
-    {"text": "👨‍👩‍👧‍👦 Семейная", "slug": "family"},
-    {"text": "💕 Love Story", "slug": "love_story"},
-    {"text": "👤 Индивидуальная", "slug": "personal"},
-    {"text": "🎉 Репортажная (банкеты, мероприятия)", "slug": "reportage"},
-    {"text": "� Свадебная", "slug": "wedding"},
-    {"text": "💋 Lingerie (будуарная)", "slug": "lingerie"},
-    {"text": "👶 Детская (школы/садики)", "slug": "children"},
-    {"text": "👩‍👶 Мама с ребёнком", "slug": "mom_child"},
-    {"text": "✝️ Крещение", "slug": "baptism"},
-    {"text": "⛪ Венчание", "slug": "wedding_church"},
+    {"text": "Семейная", "slug": "family"},
+    {"text": "Love Story", "slug": "love_story"},
+    {"text": "Индивидуальная", "slug": "personal"},
+    {"text": "Репортажная (банкеты, мероприятия)", "slug": "reportage"},
+    {"text": "Свадебная", "slug": "wedding"},
+    {"text": "Lingerie (будуарная)", "slug": "lingerie"},
+    {"text": "Детская (школы/садики)", "slug": "children"},
+    {"text": "Мама с ребёнком", "slug": "mom_child"},
+    {"text": "Крещение", "slug": "baptism"},
+    {"text": "Венчание", "slug": "wedding_church"},
 ]
 
 # Wedding packages data
@@ -174,104 +162,15 @@ WEDDING_PACKAGES = [
     }
 ]
 
-# Lingerie service information
-LINGERIE_SERVICE = {
-    "title": "Lingerie (будуарная)",
-    "text": """💋 Lingerie (будуарная).
-
-7.000 рублей
-
-1 час фотосъемки.
-2 образа
-Консультация на этапе подготовке к съемке
-Подбор мест для фотосессий 
-30-35 кадров в авторской обработке
-10 кадров в ретуши.
-Я помогу вам с подбором стилизации фотосессии и позированием
-Аренда студии оплачивается отдельно 
-Закрытый доступ к фотографиям на облачном диске
- 
-❗️Бронь фотосессии осуществляется после предоплаты.
-
-Готовые фотографии в течение 14 рабочих дня."""
-}
-
-# Reportage service information  
-REPORTAGE_SERVICE = {
-    "title": "Репортажная",
-    "text": """📸 Репортажная 
-
-От 3.000 рублей за час
-В зависимости от места проведения фотосессии.
-От 30 и до 50 в авторской обработке.
-5 кадров в ретуши.
-Закрытый доступ к фотографиям на облачном диске.
-
-❗️Бронь фотосессии осуществляется после предоплаты.
-
-Готовые фотографии в течение 14 рабочих дня."""
-}
-
-# Common service text for individual categories
-_COMMON_SERVICE_TEXT = """Прайс
-5.000 рублей
-
-1 час фотосъемки.
-2 образа
-Консультация на этапе подготовке к съемке
-Подбор мест для фотосессий
-30-35 кадров в авторской обработке
-5 кадра в ретуши.
-Я помогу вам с подбором стилизации фотосессии и позированием
-Аренда студии оплачивается отдельно
-Закрытый доступ к фотографиям на облачном диске
-
-❗️Бронь фотосессии осуществляется после предоплаты.
-Готовые фотографии в течение 14 рабочих дня."""
-
-# Individual service information
-INDIVIDUAL_SERVICE = {
-    "title": "Индивидуальная",
-    "text": f"👤 Индивидуальная\n\n{_COMMON_SERVICE_TEXT}"
-}
-
-# Mom and child service information
-MOM_CHILD_SERVICE = {
-    "title": "Мама и ребенок",
-    "text": f"👩‍👶 Мама и ребенок\n\n{_COMMON_SERVICE_TEXT}"
-}
-
-# Love story service information
-LOVE_STORY_SERVICE = {
-    "title": "Love Story",
-    "text": f"💕 Love Story\n\n{_COMMON_SERVICE_TEXT}"
-}
-
-# Family service information
-FAMILY_SERVICE = {
-    "title": "Семейная",
-    "text": f"👨‍👩‍👧‍👦 Семейная\n\n{_COMMON_SERVICE_TEXT}"
-}
-
-# Children service information
-CHILDREN_SERVICE = {
-    "title": "Детская (садики/школы)",
-    "text": f"🧒 Детская (садики/школы)\n\n{_COMMON_SERVICE_TEXT}"
-}
-
 # IDs of users for whom we show dynamic booking status button (can be extended)
 def _load_booking_status_user_ids() -> set[int]:
-    try:
-        raw = get_setting('booking_status_user_ids', '') or ''
-        ids = set()
-        for part in raw.split(','):
-            part = part.strip()
-            if part.isdigit():
-                ids.add(int(part))
-        return ids
-    except Exception:
-        # If DB not initialized yet, return empty set
-        return set()
+    raw = get_setting('booking_status_user_ids', '') or ''
+    ids = set()
+    for part in raw.split(','):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
 
 BOOKING_STATUS_USER_IDS = _load_booking_status_user_ids()
 
@@ -287,12 +186,7 @@ async def _set_static_commands():
     try:
         await bot.set_my_commands([
             BotCommand(command='start', description='Главное меню'),
-            BotCommand(command='portfolio', description='📸 Портфолио'),
-            BotCommand(command='services', description='💰 Услуги и цены'),
-            BotCommand(command='booking', description='📅 Онлайн-запись'),
-            BotCommand(command='promotions', description='🎉 Акции'),
-            BotCommand(command='reviews', description='⭐ Отзывы'),
-            BotCommand(command='social', description='📱 Соцсети'),
+            BotCommand(command='help', description='Справка'),
             BotCommand(command='adminmode', description='Админ режим'),
         ])
     except Exception as e:
@@ -330,11 +224,7 @@ def get_portfolio_categories() -> list:
 
 # временное состояние для ожидающих действий админа: username -> action
 # persisted to DB so flow survives restarts
-try:
-    ADMIN_PENDING_ACTIONS: dict = get_pending_actions()
-except Exception:
-    # If DB not initialized yet, use empty dict
-    ADMIN_PENDING_ACTIONS: dict = {}
+ADMIN_PENDING_ACTIONS: dict = get_pending_actions()
 
 
 def _user_is_admin(username: str, user_id: int) -> bool:
@@ -399,7 +289,7 @@ async def toggle_admin_mode(message: Message):
         # fallback: хотя бы обновить главное меню
         menu = get_menu(DEFAULT_MENU)
         kb = build_main_keyboard_from_menu(menu, is_admin_view_enabled(username, user_id))
-        await message.answer(MENU_MESSAGES["main"], reply_markup=kb)
+        await message.answer('Главное меню обновлено.', reply_markup=kb)
 
 
 @dp.message(Command(commands=['refreshcommands','synccommands','sync']))
@@ -408,22 +298,13 @@ async def refresh_commands(message: Message):
     if not _user_is_admin(username, message.from_user.id):
         return
     await _set_static_commands()
-    await message.answer('✅ Команды обновлены! Список:\n/start - Главное меню\n/portfolio - Портфолио\n/services - Услуги и цены\n/booking - Онлайн-запись\n/promotions - Акции\n/reviews - Отзывы\n/social - Соцсети\n/adminmode - Админ режим')
+    await message.answer('✅ Команды: /start /help /adminmode.')
 
 
-@dp.message(Command(commands=['start']))
+@dp.message(Command(commands=['start', 'help']))
 async def send_welcome(message: Message):
     username = (message.from_user.username or "").lstrip("@").lower()
     user_id = message.from_user.id
-    
-    # Save user to database for broadcast functionality
-    add_user(
-        user_id=user_id, 
-        username=message.from_user.username,
-        first_name=message.from_user.first_name,
-        last_name=message.from_user.last_name
-    )
-    
     is_admin = is_admin_view_enabled(username, user_id)
     # load menu from DB (default menu if none)
     menu = get_menu(DEFAULT_MENU)
@@ -431,271 +312,42 @@ async def send_welcome(message: Message):
     keyboard = _inject_booking_status_button(keyboard, user_id)
     await _set_static_commands()
 
-    # Отправляем фото приветствия с меню в одном сообщении
+    # Загружаем текст и image_file_id из БД, если они заданы
+    db_text = get_setting('welcome_text', WELCOME_TEXT)
     image_file_id = get_setting('welcome_image_file_id', None)
-    
-    # если в БД есть file_id — отправляем фото с кнопками
+
+    # если в БД есть file_id — попытаемся отправить его как фото
     if image_file_id:
         try:
-            await message.answer_photo(
-                photo=image_file_id, 
-                caption=MENU_MESSAGES["main"], 
-                reply_markup=keyboard
-            )
-            return  # Успешно отправили, выходим
+            await message.answer_photo(photo=image_file_id, caption=db_text)
+            await bot.send_message(chat_id=message.chat.id, text="Выберите действие ниже:", reply_markup=keyboard)
+            return
         except Exception:
-            logging.exception('Failed to send photo by file_id, will try local file')
-    
-    # Fallback to local file
+            logging.exception('Failed to send photo by file_id, will try local file or text')
+
     media_path = pathlib.Path(__file__).parent / 'media' / 'greetings.png'
     if media_path.exists():
         photo = FSInputFile(pathlib.Path(media_path))
-        try:
-            await message.answer_photo(
-                photo=photo, 
-                caption=MENU_MESSAGES["main"], 
-                reply_markup=keyboard
-            )
-            return  # Успешно отправили, выходим
-        except Exception:
-            logging.exception('Failed to send local photo')
+        await message.answer_photo(photo=photo, caption=db_text)
+    else:
+        await message.answer(db_text)
 
-    # Если не удалось отправить фото, отправляем только текст с кнопками
     try:
-        await message.answer(MENU_MESSAGES["main"], reply_markup=keyboard)
-        logging.info("Text menu sent to chat %s (user=%s)", message.chat.id, username)
+        await bot.send_message(chat_id=message.chat.id, text="Выберите действие ниже:", reply_markup=keyboard)
+        logging.info("Keyboard sent to chat %s (user=%s)", message.chat.id, username)
     except Exception:
-        logging.exception("Failed to send menu message")
+        logging.exception("Failed to send keyboard via bot.send_message, falling back to message.answer")
+        try:
+            await message.answer("Выберите действие ниже:", reply_markup=keyboard)
+        except Exception:
+            logging.exception("Fallback message.answer also failed")
 
 
     # End of send_welcome
 
 
-async def update_promotion_message(query, promotion_idx: int, promotions: list, is_admin: bool = False):
-    """Update existing promotion message with navigation."""
-    if not promotions:
-        await query.message.edit_text("🎉 На текущий момент нет действующих акций.")
-        return
-    
-    # Ensure valid index
-    if promotion_idx >= len(promotions):
-        promotion_idx = 0
-    elif promotion_idx < 0:
-        promotion_idx = len(promotions) - 1
-    
-    promotion = promotions[promotion_idx]
-    promo_id, title, description, image_file_id, start_date, end_date, created_by = promotion
-    
-    # Format the message
-    from datetime import datetime
-    try:
-        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
-        formatted_end_date = end_date_obj.strftime('%d.%m.%Y')
-    except:
-        formatted_end_date = end_date
-    
-    text = f"🎉 {title}\n\n{description}\n\n📅 Акция действует до {formatted_end_date}"
-    
-    if len(promotions) > 1:
-        text += f"\n\n📄 {promotion_idx + 1} из {len(promotions)}"
-    
-    kb = build_promotions_keyboard(promotion_idx, is_admin)
-    
-    # Check if the current message has photo
-    current_has_photo = query.message.photo is not None
-    new_has_photo = image_file_id is not None
-    
-    try:
-        if current_has_photo and new_has_photo:
-            # Both current and new message have photos - update media
-            from aiogram.types import InputMediaPhoto
-            media = InputMediaPhoto(media=image_file_id, caption=text)
-            await query.message.edit_media(media=media, reply_markup=kb)
-        elif current_has_photo and not new_has_photo:
-            # Current has photo, new doesn't - delete current and send text message
-            await query.message.delete()
-            from config import bot
-            await bot.send_message(chat_id=query.message.chat.id, text=text, reply_markup=kb)
-        elif not current_has_photo and new_has_photo:
-            # Current is text, new has photo - delete current and send photo message
-            await query.message.delete()
-            from config import bot
-            await bot.send_photo(chat_id=query.message.chat.id, photo=image_file_id, caption=text, reply_markup=kb)
-        else:
-            # Both are text messages - edit text
-            await query.message.edit_text(text, reply_markup=kb)
-    except Exception as e:
-        logging.warning(f"Failed to update promotion message: {e}")
-        # Fallback: delete current message and send new one
-        try:
-            await query.message.delete()
-            from config import bot
-            if image_file_id:
-                await bot.send_photo(chat_id=query.message.chat.id, photo=image_file_id, caption=text, reply_markup=kb)
-            else:
-                await bot.send_message(chat_id=query.message.chat.id, text=text, reply_markup=kb)
-        except Exception as e2:
-            logging.error(f"Fallback also failed: {e2}")
-            # Last resort: just edit the text without image
-            try:
-                await query.message.edit_text(text, reply_markup=kb)
-            except:
-                pass
-
-
-async def show_promotion(message, promotion_idx: int, promotions: list = None, is_admin: bool = False):
-    """Show a specific promotion with navigation."""
-    if promotions is None:
-        promotions = get_active_promotions()
-    
-    if not promotions:
-        if is_admin:
-            kb = build_add_promotion_keyboard()
-            await message.answer(
-                "🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊", 
-                reply_markup=kb
-            )
-        else:
-            await message.answer("🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊")
-        return
-    
-    # Ensure valid index
-    if promotion_idx >= len(promotions):
-        promotion_idx = 0
-    elif promotion_idx < 0:
-        promotion_idx = len(promotions) - 1
-    
-    promotion = promotions[promotion_idx]
-    promo_id, title, description, image_file_id, start_date, end_date, created_by = promotion
-    
-    # Format the message
-    from datetime import datetime
-    try:
-        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
-        formatted_end_date = end_date_obj.strftime('%d.%m.%Y')
-    except:
-        formatted_end_date = end_date
-    
-    text = f"🎉 {title}\n\n{description}\n\n📅 Акция действует до {formatted_end_date}"
-    
-    if len(promotions) > 1:
-        text += f"\n\n📄 {promotion_idx + 1} из {len(promotions)}"
-    
-    kb = build_promotions_keyboard(promotion_idx, is_admin)
-    
-    try:
-        if image_file_id:
-            await message.answer_photo(photo=image_file_id, caption=text, reply_markup=kb)
-        else:
-            await message.answer(text, reply_markup=kb)
-    except Exception as e:
-        logging.warning(f"Failed to send promotion: {e}")
-        await message.answer(text, reply_markup=kb)
-
-
-def get_portfolio_keyboard_with_likes(slug: str, idx: int, user_id: int) -> InlineKeyboardMarkup:
-    """Get portfolio photo keyboard with like information."""
-    likes_count = get_photo_likes_count(slug, idx)
-    user_has_liked = user_has_liked_photo(slug, idx, user_id)
-    return build_category_photo_nav_keyboard(slug, idx, user_id, likes_count, user_has_liked)
-
-# Command handlers for menu items
-@dp.message(Command(commands=['portfolio']))
-async def cmd_portfolio(message: Message):
-    """Handle /portfolio command"""
-    username = (message.from_user.username or "").lstrip("@").lower()
-    cats = get_portfolio_categories()
-    is_admin = is_admin_view_enabled(username, message.from_user.id)
-    kb = build_portfolio_keyboard(cats, is_admin=is_admin)
-    await message.answer(MENU_MESSAGES["portfolio"], reply_markup=kb)
-
-@dp.message(Command(commands=['services']))
-async def cmd_services(message: Message):
-    """Handle /services command"""
-    kb = build_services_keyboard()
-    await message.answer(MENU_MESSAGES["services"], reply_markup=kb)
-
-@dp.message(Command(commands=['booking']))
-async def cmd_booking(message: Message):
-    """Handle /booking command"""
-    from datetime import datetime, timedelta, timezone
-    BOOK_TZ = timezone.utc
-    
-    # Check if user already has a booking
-    user_id = message.from_user.id
-    bk = get_active_booking_for_user(user_id)
-    if bk:
-        dt = datetime.fromisoformat(bk['start_ts'])
-        txt = (f'📅 Ваша запись:\n'
-               f'Время: {dt.strftime("%H:%M %d.%m.%Y")}\n'
-               f'Категория: {bk.get("category") or "—"}')
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='Перенести', callback_data=f'bk_resch:{bk["id"]}')],
-            [InlineKeyboardButton(text='Отменить', callback_data=f'bk_cancel_booking:{bk["id"]}')],
-            [InlineKeyboardButton(text='⬅️ В меню', callback_data='back_main')]
-        ])
-        await message.answer(txt, reply_markup=kb)
-        return
-    
-    # Start booking process
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='📅 Записаться', callback_data='booking')],
-        [InlineKeyboardButton(text='⬅️ В меню', callback_data='back_main')]
-    ])
-    await message.answer("📅 Онлайн-запись на фотосессию", reply_markup=kb)
-
-@dp.message(Command(commands=['promotions']))
-async def cmd_promotions(message: Message):
-    """Handle /promotions command"""
-    username = (message.from_user.username or "").lstrip("@").lower()
-    
-    # Cleanup expired promotions first
-    cleanup_expired_promotions()
-    
-    # Get active promotions
-    promotions = get_active_promotions()
-    is_admin = is_admin_view_enabled(username, message.from_user.id)
-    
-    if not promotions:
-        # No active promotions
-        if is_admin:
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="➕ Добавить акцию", callback_data="add_promotion")],
-                [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_main")]
-            ])
-            await message.answer("🎉 На текущий момент нет действующих акций.\n\nВы можете добавить новую акцию:", reply_markup=kb)
-        else:
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_main")]
-            ])
-            await message.answer("🎉 На текущий момент нет действующих акций.", reply_markup=kb)
-        return
-    
-    # Show first promotion
-    await show_promotion(message, 0, promotions, is_admin)
-
-@dp.message(Command(commands=['reviews']))
-async def cmd_reviews(message: Message):
-    """Handle /reviews command"""
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_main")]
-    ])
-    await message.answer("⭐ Отзывы клиентов:\n\nВ данный момент раздел находится в разработке.", reply_markup=kb)
-
-@dp.message(Command(commands=['social']))
-async def cmd_social(message: Message):
-    """Handle /social command"""
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_main")]
-    ])
-    await message.answer("📱 Социальные сети:\n\nВ данный момент раздел находится в разработке.", reply_markup=kb)
-
-
 @dp.callback_query()
 async def handle_callback(query: CallbackQuery):
-    # Fix for UnboundLocalError: explicitly declare imported classes as global
-    global InlineKeyboardMarkup, InlineKeyboardButton
-    
     data_raw = query.data or ""
     data = data_raw.lower()
     username = (query.from_user.username or "").lstrip("@").lower()
@@ -708,73 +360,48 @@ async def handle_callback(query: CallbackQuery):
     except Exception:
         pass
 
+    # helper: resolve an identifier (either numeric index or item callback) to index
+    def resolve_idx(token: str) -> int | None:
+        """token may be '123' or '::ident' or 'ident' depending on keyboard; return index or None"""
+        menu = get_menu(DEFAULT_MENU)
+        # strip possible '::' prefix
+        if token.startswith('::'):
+            token = token[2:]
+        logging.info("resolve_idx called with token=%s", token)
+        # numeric?
+        try:
+            i = int(token)
+        except Exception:
+            i = None
+        if isinstance(i, int):
+            if 0 <= i < len(menu):
+                logging.info("resolve_idx returning numeric index=%s for token=%s", i, token)
+                return i
+        # otherwise search by callback identifier
+        for i, m in enumerate(menu):
+            if m.get('callback') == token:
+                logging.info("resolve_idx found index=%s for token=%s", i, token)
+                return i
+        return None
+    
+    def extract_token(data_str: str) -> str:
+        """Return token part for callbacks supporting both '::' and ':' delimiters."""
+        if '::' in data_str:
+            return data_str.split('::', 1)[1]
+        if ':' in data_str:
+            return data_str.split(':', 1)[1]
+        return data_str
+
     # public actions
     if data == "portfolio":
         cats = get_portfolio_categories()
         is_admin = is_admin_view_enabled(username, query.from_user.id)
         kb = build_portfolio_keyboard(cats, is_admin=is_admin)
-        await query.message.answer(MENU_MESSAGES["portfolio"], reply_markup=kb)
+        await query.message.answer("📁 Выберите категорию портфолио:", reply_markup=kb)
         return
     if data == "services":
         kb = build_services_keyboard()
-        await query.message.answer(MENU_MESSAGES["services"], reply_markup=kb)
-        return
-    
-    if data == "promotions":
-        # Cleanup expired promotions first
-        cleanup_expired_promotions()
-        
-        # Get active promotions
-        promotions = get_active_promotions()
-        is_admin = is_admin_view_enabled(username, query.from_user.id)
-        
-        if not promotions:
-            # No active promotions
-            if is_admin:
-                kb = build_add_promotion_keyboard()
-                await query.message.answer(
-                    "🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊", 
-                    reply_markup=kb
-                )
-            else:
-                await query.message.answer("🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊")
-            return
-        
-        # Show first promotion
-        await show_promotion(query.message, 0, promotions, is_admin)
-        return
-
-    # Handle promotion navigation
-    if data.startswith("promo_prev:") or data.startswith("promo_next:"):
-        # Cleanup expired promotions first
-        cleanup_expired_promotions()
-        
-        # Get active promotions
-        promotions = get_active_promotions()
-        is_admin = is_admin_view_enabled(username, query.from_user.id)
-        
-        if not promotions:
-            await query.message.answer("🎉 На текущий момент нет действующих акций.")
-            return
-        
-        # Extract current index
-        try:
-            current_idx = int(data.split(":", 1)[1])
-        except (ValueError, IndexError):
-            current_idx = 0
-        
-        # Calculate new index
-        if data.startswith("promo_prev:"):
-            new_idx = (current_idx - 1) % len(promotions)
-        else:  # promo_next
-            new_idx = (current_idx + 1) % len(promotions)
-        
-        # Update the promotion message with new index
-        try:
-            await update_promotion_message(query, new_idx, promotions, is_admin)
-        except Exception as e:
-            # Fallback to first promotion if something goes wrong
-            await update_promotion_message(query, 0, promotions, is_admin)
+        await query.message.answer("💼 Услуги и цены: выберите категорию", reply_markup=kb)
         return
     
     if data == "wedding_packages":
@@ -782,62 +409,6 @@ async def handle_callback(query: CallbackQuery):
         package = WEDDING_PACKAGES[0]
         kb = build_wedding_packages_nav_keyboard(0)
         await query.message.answer(package["text"], reply_markup=kb)
-        return
-    
-    if data == "lingerie_service":
-        # Show lingerie service information
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
-        ])
-        await query.message.answer(LINGERIE_SERVICE["text"], reply_markup=kb)
-        return
-    
-    if data == "reportage_service":
-        # Show reportage service information
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
-        ])
-        await query.message.answer(REPORTAGE_SERVICE["text"], reply_markup=kb)
-        return
-    
-    if data == "individual_service":
-        # Show individual service information
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
-        ])
-        await query.message.answer(INDIVIDUAL_SERVICE["text"], reply_markup=kb)
-        return
-    
-    if data == "mom_child_service":
-        # Show mom and child service information
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
-        ])
-        await query.message.answer(MOM_CHILD_SERVICE["text"], reply_markup=kb)
-        return
-    
-    if data == "love_story_service":
-        # Show love story service information
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
-        ])
-        await query.message.answer(LOVE_STORY_SERVICE["text"], reply_markup=kb)
-        return
-    
-    if data == "family_service":
-        # Show family service information
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
-        ])
-        await query.message.answer(FAMILY_SERVICE["text"], reply_markup=kb)
-        return
-    
-    if data == "children_service":
-        # Show children service information
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
-        ])
-        await query.message.answer(CHILDREN_SERVICE["text"], reply_markup=kb)
         return
     
     if data.startswith("wedding_pkg_prev:") or data.startswith("wedding_pkg_next:"):
@@ -868,7 +439,7 @@ async def handle_callback(query: CallbackQuery):
         is_admin = is_admin_view_enabled(username, query.from_user.id)
         keyboard = build_main_keyboard_from_menu(menu, is_admin)
         keyboard = _inject_booking_status_button(keyboard, query.from_user.id)
-        await query.message.answer(MENU_MESSAGES["main"], reply_markup=keyboard)
+        await query.message.answer("Выберите действие:", reply_markup=keyboard)
         return
     
     # booking flow handled later (remove early stub)
@@ -883,25 +454,22 @@ async def handle_callback(query: CallbackQuery):
             photos = []
         
         if photos:
-            # Sequential display: newest to oldest
-            chat_key = (query.message.chat.id, 'reviews')
-            last_idx = LAST_CATEGORY_PHOTO.get(chat_key)
-            
-            if last_idx is None:
-                # First time, start from newest
-                idx = len(photos) - 1
-            else:
-                # Navigate to previous (older) review
-                idx = last_idx - 1
-                if idx < 0:
-                    # Reached oldest, cycle back to newest
-                    idx = len(photos) - 1
-                    
+            import random
+            cycle_key = (query.message.chat.id, 'reviews')
+            seen = SEEN_CATEGORY_PHOTOS.get(cycle_key, set())
+            if len(seen) >= len(photos):
+                seen.clear()
+            available = [i for i in range(len(photos)) if i not in seen]
+            if not available:
+                available = list(range(len(photos)))
+            idx = random.choice(available)
             fid = photos[idx]
             caption = f'⭐ Отзыв {idx+1} из {len(photos)}'
             try:
                 await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption=caption, reply_markup=build_reviews_nav_keyboard(idx))
-                LAST_CATEGORY_PHOTO[chat_key] = idx
+                LAST_CATEGORY_PHOTO[(query.message.chat.id, 'reviews')] = idx
+                seen.add(idx)
+                SEEN_CATEGORY_PHOTOS[cycle_key] = seen
             except Exception:
                 await query.message.answer(f'⭐ Отзывы (ошибка отправки фото)', reply_markup=build_reviews_nav_keyboard(0))
         else:
@@ -956,31 +524,25 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         
         photo_sent = False
         if photos:
-            # Show photos from newest (last uploaded) to oldest
+            import random
             cycle_key = (query.message.chat.id, slug)
-            last_shown = LAST_CATEGORY_PHOTO.get((query.message.chat.id, slug), len(photos))  # Start from newest
-            
-            # Find next photo to show (going backwards from newest to oldest)
-            if last_shown >= len(photos):
-                # First time or reached beginning, start from newest
-                idx = len(photos) - 1
-            else:
-                # Show previous photo (older)
-                idx = last_shown - 1
-                if idx < 0:
-                    # Reached oldest, cycle back to newest
-                    idx = len(photos) - 1
-            
+            seen = SEEN_CATEGORY_PHOTOS.get(cycle_key, set())
+            if len(seen) >= len(photos):
+                seen.clear()
+            available = [i for i in range(len(photos)) if i not in seen]
+            if not available:
+                available = list(range(len(photos)))
+            idx = random.choice(available)
             fid = photos[idx]
             caption = f'📸 {cat.get("text")}'
             try:
-                keyboard = get_portfolio_keyboard_with_likes(slug, idx, query.from_user.id)
-                await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption=caption, reply_markup=keyboard)
+                await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption=caption, reply_markup=build_category_photo_nav_keyboard(slug, idx))
                 LAST_CATEGORY_PHOTO[(query.message.chat.id, slug)] = idx
+                seen.add(idx)
+                SEEN_CATEGORY_PHOTOS[cycle_key] = seen
                 photo_sent = True
             except Exception:
-                keyboard = get_portfolio_keyboard_with_likes(slug, 0, query.from_user.id)
-                await query.message.answer(f'📸 {cat.get("text")} (ошибка отправки фото)', reply_markup=keyboard)
+                await query.message.answer(f'📸 {cat.get("text")} (ошибка отправки фото)', reply_markup=build_category_photo_nav_keyboard(slug, 0))
                 photo_sent = True
         else:
             await query.message.answer(f'📸 Категория: {cat.get("text")} (нет фото)')
@@ -1011,20 +573,19 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             photos = []
         
         if photos:
-            # Sequential navigation: newest to oldest, then cycle
+            import random
             chat_key = (query.message.chat.id, slug)
             last_idx = LAST_CATEGORY_PHOTO.get(chat_key)
-            
-            if last_idx is None:
-                # First time, start from newest
-                idx = len(photos) - 1
-            else:
-                # Navigate to previous (older) photo
-                idx = last_idx - 1
-                if idx < 0:
-                    # Reached oldest, cycle back to newest
-                    idx = len(photos) - 1
-                    
+            cycle_key = (query.message.chat.id, slug)
+            seen = SEEN_CATEGORY_PHOTOS.get(cycle_key, set())
+            if last_idx is not None:
+                seen.add(last_idx)
+            if len(seen) >= len(photos):
+                seen = set()  # reset cycle
+            remaining = [i for i in range(len(photos)) if i not in seen]
+            if not remaining:
+                remaining = list(range(len(photos)))
+            idx = random.choice(remaining)
             fid = photos[idx]
             # resolve category display text
             cat_text = next((c.get('text') for c in get_portfolio_categories() if c.get('slug') == slug), slug)
@@ -1032,56 +593,20 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             try:
                 logging.info("Attempting to edit_media for photo navigation: slug=%s, idx=%s", slug, idx)
                 await query.message.edit_media(InputMediaPhoto(media=fid, caption=f'📸 {cat_text}'))
-                keyboard = get_portfolio_keyboard_with_likes(slug, idx, query.from_user.id)
-                await query.message.edit_reply_markup(reply_markup=keyboard)
+                await query.message.edit_reply_markup(reply_markup=build_category_photo_nav_keyboard(slug, idx))
                 logging.info("Successfully edited media for photo navigation")
                 LAST_CATEGORY_PHOTO[chat_key] = idx
+                seen.add(idx)
+                SEEN_CATEGORY_PHOTOS[cycle_key] = seen
             except Exception as e:
                 # fallback new message
                 logging.warning("Failed to edit_media, falling back to new message: %s", e)
-                keyboard = get_portfolio_keyboard_with_likes(slug, idx, query.from_user.id)
-                await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption=f'📸 {cat_text}', reply_markup=keyboard)
+                await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption=f'📸 {cat_text}', reply_markup=build_category_photo_nav_keyboard(slug, idx))
                 LAST_CATEGORY_PHOTO[chat_key] = idx
+                seen.add(idx)
+                SEEN_CATEGORY_PHOTOS[cycle_key] = seen
         else:
             await query.message.answer('Нет фото в категории.')
-        return
-
-    # Photo like handler
-    if data.startswith('like:'):
-        parts = data.split(':')
-        if len(parts) < 3:
-            await query.answer("❌ Ошибка: неверный формат лайка")
-            return
-        
-        slug = parts[1]
-        try:
-            photo_idx = int(parts[2])
-        except ValueError:
-            await query.answer("❌ Ошибка: неверный индекс фото")
-            return
-        
-        user_id = query.from_user.id
-        
-        # Toggle like
-        liked = toggle_photo_like(slug, photo_idx, user_id)
-        
-        # Get updated counts and status
-        likes_count = get_photo_likes_count(slug, photo_idx)
-        user_has_liked = user_has_liked_photo(slug, photo_idx, user_id)
-        
-        # Update keyboard with new like info
-        try:
-            keyboard = build_category_photo_nav_keyboard(slug, photo_idx, user_id, likes_count, user_has_liked)
-            await query.message.edit_reply_markup(reply_markup=keyboard)
-            
-            # Show feedback
-            if liked:
-                await query.answer("❤️ Лайк поставлен!")
-            else:
-                await query.answer("💔 Лайк убран")
-        except Exception as e:
-            logging.warning(f"Failed to update like button: {e}")
-            await query.answer("❤️ Лайк обновлен!")
         return
 
     # category admin back from delete list
@@ -1204,7 +729,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         except Exception:
             # fallback на старый список при ошибке
             kb = build_category_delete_keyboard(slug, photos)
-            await query.message.answer(MENU_MESSAGES["delete_photo"], reply_markup=kb)
+            await query.message.answer('Выберите фото для удаления:', reply_markup=kb)
         return
 
     if data.startswith('pf_del_idx:'):
@@ -1301,11 +826,8 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
                 fid = photos[next_idx]
                 from aiogram.types import InputMediaPhoto
                 try:
-                    # Use edit_media with media and reply_markup in one call
-                    await query.message.edit_media(
-                        InputMediaPhoto(media=fid, caption='🗑 Удалено. Следующее.'),
-                        reply_markup=build_category_delete_viewer_keyboard(slug, next_idx)
-                    )
+                    await query.message.edit_media(InputMediaPhoto(media=fid, caption='🗑 Удалено. Следующее.'))
+                    await query.message.edit_reply_markup(reply_markup=build_category_delete_viewer_keyboard(slug, next_idx))
                 except Exception:
                     await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption='🗑 Удалено. Следующее.', reply_markup=build_category_delete_viewer_keyboard(slug, next_idx))
                 await query.message.answer('Фото удалено. Можно восстановить последнее.', reply_markup=build_undo_photo_delete_kb(slug))
@@ -1352,7 +874,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             await query.message.edit_reply_markup(reply_markup=kb)
         except Exception:
             # fallback: send new message if edit fails (e.g., message too old)
-            await query.message.answer(MENU_MESSAGES["portfolio"], reply_markup=kb)
+            await query.message.answer('📁 Выберите категорию портфолио:', reply_markup=kb)
         return
 
     # Social media edit
@@ -1377,20 +899,19 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
                 photos = []
             
             if photos:
-                # Sequential navigation: newest to oldest, then cycle
+                import random
                 chat_key = (query.message.chat.id, 'reviews')
                 last_idx = LAST_CATEGORY_PHOTO.get(chat_key)
-                
-                if last_idx is None:
-                    # First time, start from newest
-                    idx = len(photos) - 1
-                else:
-                    # Navigate to previous (older) review
-                    idx = last_idx - 1
-                    if idx < 0:
-                        # Reached oldest, cycle back to newest
-                        idx = len(photos) - 1
-                        
+                cycle_key = (query.message.chat.id, 'reviews')
+                seen = SEEN_CATEGORY_PHOTOS.get(cycle_key, set())
+                if last_idx is not None:
+                    seen.add(last_idx)
+                if len(seen) >= len(photos):
+                    seen = set()  # reset cycle
+                remaining = [i for i in range(len(photos)) if i not in seen]
+                if not remaining:
+                    remaining = list(range(len(photos)))
+                idx = random.choice(remaining)
                 fid = photos[idx]
                 caption = f'⭐ Отзыв {idx+1} из {len(photos)}'
                 from aiogram.types import InputMediaPhoto
@@ -1398,10 +919,14 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
                     await query.message.edit_media(InputMediaPhoto(media=fid, caption=caption))
                     await query.message.edit_reply_markup(reply_markup=build_reviews_nav_keyboard(idx))
                     LAST_CATEGORY_PHOTO[chat_key] = idx
+                    seen.add(idx)
+                    SEEN_CATEGORY_PHOTOS[cycle_key] = seen
                 except Exception:
                     # fallback new message
                     await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption=caption, reply_markup=build_reviews_nav_keyboard(idx))
                     LAST_CATEGORY_PHOTO[chat_key] = idx
+                    seen.add(idx)
+                    SEEN_CATEGORY_PHOTOS[cycle_key] = seen
         return
 
     # Reviews admin - add review
@@ -1431,7 +956,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             return
         
         kb = build_reviews_delete_keyboard(photos)
-        await query.message.answer(f'{MENU_MESSAGES["delete_review"]} (всего: {len(photos)}):', reply_markup=kb)
+        await query.message.answer(f'Выберите отзыв для удаления (всего: {len(photos)}):', reply_markup=kb)
         return
 
     # Reviews delete specific review
@@ -1461,7 +986,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         is_admin = is_admin_view_enabled(username, query.from_user.id)
         kb = build_main_keyboard_from_menu(menu, is_admin)
         kb = _inject_booking_status_button(kb, query.from_user.id)
-        await query.message.answer(MENU_MESSAGES["main"], reply_markup=kb)
+        await query.message.answer('⬅️ Возврат в главное меню.', reply_markup=kb)
         return
 
     # Booking status button (only for special users)
@@ -1472,7 +997,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             menu = get_menu(DEFAULT_MENU)
             kb = build_main_keyboard_from_menu(menu, is_admin_view_enabled(username, query.from_user.id))
             kb = _inject_booking_status_button(kb, query.from_user.id)
-            await query.message.answer(MENU_MESSAGES["main"], reply_markup=kb)
+            await query.message.answer('Нет активной записи.', reply_markup=kb)
             return
         from datetime import datetime
         dt = datetime.fromisoformat(bk['start_ts'])
@@ -1492,7 +1017,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
     # --- Booking flow ---
     from datetime import datetime, timedelta, timezone
     BOOK_TZ = timezone.utc
-    async def _send_booking_step(q: CallbackQuery, text: str, kb: Optional[InlineKeyboardMarkup] = None):
+    async def _send_booking_step(q: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None):
         """Show next booking step using a single reusable message.
 
         Strategy:
@@ -1559,8 +1084,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         return m
     def build_booking_date_kb():
         today = datetime.now(BOOK_TZ).date()
-        # Начинаем с завтрашней даты (минимум +1 день от текущей)
-        dates = [today + timedelta(days=i) for i in range(1, 31)]  # с 1 дня (завтра) на 30 дней вперед
+        dates = [today + timedelta(days=i) for i in range(30)]
         rows = []
         row = []
         for d in dates:
@@ -1665,7 +1189,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         if row: rows.append(row)
         rows.append([InlineKeyboardButton(text='⬅️ Назад', callback_data='bk_back_date')])
         rows.append([InlineKeyboardButton(text='❌ Отмена', callback_data='bk_cancel')])
-        await _send_booking_step(query, MENU_MESSAGES["booking"], InlineKeyboardMarkup(inline_keyboard=rows))
+        await _send_booking_step(query, 'Выберите категорию фотосессии:', InlineKeyboardMarkup(inline_keyboard=rows))
         return
     if data.startswith('bk_cat:'):
         _, date_iso, hour, slug = data.split(':',3)
@@ -1699,7 +1223,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
                 slug = None
         if not slug:
             await query.message.answer('Категория утрачена, начните заново.')
-            await query.message.answer(MENU_MESSAGES["select_date"], reply_markup=build_booking_date_kb())
+            await query.message.answer('Выберите дату:', reply_markup=build_booking_date_kb())
             return
         cat = next((c for c in get_portfolio_categories() if c.get('slug')==slug), {'text': slug})
         # reschedule?
@@ -1744,7 +1268,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         menu = get_menu(DEFAULT_MENU)
         kb_main = build_main_keyboard_from_menu(menu, is_admin_view_enabled(username, query.from_user.id))
         kb_main = _inject_booking_status_button(kb_main, query.from_user.id)
-        await bot.send_message(query.message.chat.id, MENU_MESSAGES["main"], reply_markup=kb_main)
+        await bot.send_message(query.message.chat.id, 'Главное меню обновлено:', reply_markup=kb_main)
         return
 
     # Reschedule (after helper defs)
@@ -1787,7 +1311,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         menu = get_menu(DEFAULT_MENU)
         kb = build_main_keyboard_from_menu(menu, is_admin_view_enabled(username, query.from_user.id))
         kb = _inject_booking_status_button(kb, query.from_user.id)
-        await query.message.answer(MENU_MESSAGES["main"], reply_markup=kb)
+        await query.message.answer('Запись отменена.', reply_markup=kb)
         return
 
     # admin actions
@@ -1796,7 +1320,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
         kb = admin_panel_keyboard(is_admin_view_enabled(username, query.from_user.id))
-        await query.message.answer(MENU_MESSAGES["admin"], reply_markup=kb)
+        await query.message.answer("🔒 Панель администрирования: выберите действие:", reply_markup=kb)
         return
 
     # start new category creation
@@ -1910,280 +1434,162 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             await query.message.answer('Фото уже существует в категории.')
         return
 
-    if data == 'admin_broadcast':
-        if username not in ADMIN_USERNAMES:
+    # menu management entrypoint
+    if data == 'admin_manage_menu':
+        if not is_admin_view_enabled(username, query.from_user.id):
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        ADMIN_PENDING_ACTIONS[username] = 'broadcast_text'
+        menu = get_menu(DEFAULT_MENU)
+        kb = build_menu_edit_kb(menu)
+        await query.message.answer("🛠️ Управление меню:", reply_markup=kb)
+        return
+
+    # add menu
+    if data == 'add_menu':
+        if not is_admin_view_enabled(username, query.from_user.id):
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'add_menu', 'payload': {}}
         save_pending_actions(ADMIN_PENDING_ACTIONS)
-        await query.message.answer('📢 Отправьте текст сообщения для рассылки всем пользователям бота.')
+        await query.message.answer('Пришлите текст для новой кнопки (одним сообщением).')
         return
 
-    if data == 'broadcast_confirm':
-        if username not in ADMIN_USERNAMES:
+    if data == 'add_menu_manual':
+        if not is_admin_view_enabled(username, query.from_user.id):
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        # Get stored broadcast text
-        broadcast_text = get_setting(f'broadcast_temp_{username}', '')
-        if not broadcast_text:
-            await query.message.answer('❌ Текст для рассылки не найден. Попробуйте снова.')
-            return
-        
-        await perform_broadcast(broadcast_text, query.message)
-        # Clear temporary text
-        set_setting(f'broadcast_temp_{username}', '')
-        return
-
-    if data == 'broadcast_cancel':
-        if username not in ADMIN_USERNAMES:
-            await query.message.answer("🚫 У вас нет доступа к администрированию.")
-            return
-        # Clear temporary text
-        set_setting(f'broadcast_temp_{username}', '')
-        await query.message.answer('❌ Рассылка отменена.')
-        return
-
-    if data == 'add_promotion':
-        if username not in ADMIN_USERNAMES:
-            await query.message.answer("🚫 У вас нет доступа к администрированию.")
-            return
-        ADMIN_PENDING_ACTIONS[username] = {'action': 'add_promotion_title'}
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'add_menu_manual', 'payload': {}}
         save_pending_actions(ADMIN_PENDING_ACTIONS)
-        await query.message.answer('📝 Введите название акции:')
+        await query.message.answer('Пришлите текст для новой кнопки (одним сообщением). Затем я попрошу callback_data.')
         return
 
-    # Promotion "no image" handler
-    if data == 'promo_no_image':
-        if username not in ADMIN_USERNAMES:
+    if data == 'view_menu':
+        if not is_admin_view_enabled(username, query.from_user.id):
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        
-        # Get current pending action data
-        pending = ADMIN_PENDING_ACTIONS.get(username, {})
-        if pending.get('action') != 'add_promotion_image':
-            await query.message.answer("❌ Ошибка: неожиданное состояние. Начните заново.")
+        menu = get_menu(DEFAULT_MENU)
+        pretty = json.dumps(menu, ensure_ascii=False, indent=2)
+        await query.message.answer(f'Текущая структура меню (JSON):\n{pretty}')
+        return
+
+    # edit/delete menu handlers
+    if data.startswith('edit_menu:') or data.startswith('edit_menu::'):
+        if not is_admin_view_enabled(username, query.from_user.id):
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        
-        payload = pending.get('payload', {})
-        title = payload.get('title')
-        description = payload.get('description')
-        
-        # Skip image, go to date selection
-        ADMIN_PENDING_ACTIONS[username] = {
-            'action': 'add_promotion_start_date', 
-            'payload': {'title': title, 'description': description, 'image_file_id': None}
-        }
+        token = extract_token(data)
+        idx = resolve_idx(token)
+        if idx is None:
+            await query.message.answer('Неверный идентификатор кнопки.')
+            return
+        menu = get_menu(DEFAULT_MENU)
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'edit_menu', 'payload': {'idx': idx}}
         save_pending_actions(ADMIN_PENDING_ACTIONS)
-        
-        from datetime import datetime
-        await query.message.edit_text('✅ Акция будет создана без изображения\n\n📅 Выберите дату начала акции:', 
-                             reply_markup=build_promotion_date_keyboard(datetime.now().year, datetime.now().month, 'promo_start_date'))
+        await query.message.answer(f'Отправьте новый текст для кнопки "{menu[idx].get("text")}"')
         return
 
-    # Promotion date selection handlers
-    if data.startswith('promo_start_date:'):
-        if username not in ADMIN_USERNAMES:
+    if data.startswith('edit_callback:') or data.startswith('edit_callback::'):
+        if not is_admin_view_enabled(username, query.from_user.id):
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        
-        # Extract selected date
-        selected_date = data.split(':', 1)[1]  # Format: 2024-01-15
-        
-        # Get current pending action data
-        pending = ADMIN_PENDING_ACTIONS.get(username, {})
-        if pending.get('action') != 'add_promotion_start_date':
-            await query.message.answer("❌ Ошибка: неожиданное состояние. Начните заново.")
+        token = extract_token(data)
+        idx = resolve_idx(token)
+        if idx is None:
+            await query.message.answer('Неверный идентификатор кнопки.')
             return
-        
-        payload = pending.get('payload', {})
-        payload['start_date'] = selected_date
-        
-        # Ask for end date
-        ADMIN_PENDING_ACTIONS[username] = {
-            'action': 'add_promotion_end_date',
-            'payload': payload
-        }
+        menu = get_menu(DEFAULT_MENU)
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'edit_callback', 'payload': {'idx': idx}}
         save_pending_actions(ADMIN_PENDING_ACTIONS)
-        
-        from datetime import datetime
-        await query.message.edit_text(f'✅ Дата начала выбрана: {selected_date}\n\n📅 Теперь выберите дату окончания акции:', 
-                                      reply_markup=build_promotion_date_keyboard(datetime.now().year, datetime.now().month, 'promo_end_date'))
+        await query.message.answer(f'Пришлите новый callback_data для кнопки "{menu[idx].get("text")}" (латинские буквы, цифры, _ и - будут сохранены).')
         return
 
-    if data.startswith('promo_end_date:'):
-        if username not in ADMIN_USERNAMES:
+    # Immediate delete on prompt to simplify UX: remove the item when "Удалить" pressed
+    if data.startswith('prompt_delete:') or data.startswith('prompt_delete::'):
+        if not is_admin_view_enabled(username, query.from_user.id):
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        
-        # Extract selected date
-        selected_date = data.split(':', 1)[1]  # Format: 2024-01-15
-        
-        # Get current pending action data
-        pending = ADMIN_PENDING_ACTIONS.get(username, {})
-        if pending.get('action') != 'add_promotion_end_date':
-            await query.message.answer("❌ Ошибка: неожиданное состояние. Начните заново.")
+        token = extract_token(data)
+        idx = resolve_idx(token)
+        if idx is None:
+            await query.message.answer('Неверный идентификатор кнопки.')
             return
-        
-        payload = pending.get('payload', {})
-        start_date = payload.get('start_date')
-        
-        # Validate that end date is after start date
-        from datetime import datetime
         try:
-            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-            end_dt = datetime.strptime(selected_date, '%Y-%m-%d')
-            
-            if end_dt <= start_dt:
-                await query.message.answer("❌ Дата окончания должна быть позже даты начала. Выберите другую дату.")
-                return
-        except ValueError:
-            await query.message.answer("❌ Ошибка формата даты. Попробуйте снова.")
-            return
-        
-        # Create promotion
-        title = payload.get('title')
-        description = payload.get('description')
-        image_file_id = payload.get('image_file_id')
-        
-        try:
-            add_promotion(title, description, start_date, selected_date, str(query.from_user.id), image_file_id)
-            ADMIN_PENDING_ACTIONS.pop(username, None)
+            menu = get_menu(DEFAULT_MENU)
+            logging.info("DELETE FLOW ENTERED token=%s idx=%s menu_before=%s", token, idx, json.dumps(menu, ensure_ascii=False))
+            removed = menu.pop(idx)
+            save_menu(menu)
+            logging.info("DELETE FLOW SUCCESS token=%s removed=%s menu_after=%s", token, removed, json.dumps(menu, ensure_ascii=False))
+            await query.message.answer(f'✅ Кнопка "{removed.get("text")}" удалена.')
+            kb = build_menu_edit_kb(menu)
+            await query.message.answer('Обновлённое меню:', reply_markup=kb)
             save_pending_actions(ADMIN_PENDING_ACTIONS)
-            
-            await query.message.edit_text(f'✅ Акция "{title}" успешно создана!\n\n📅 Период: {start_date} - {selected_date}')
-        except Exception as e:
-            await query.message.answer(f"❌ Ошибка при создании акции: {str(e)}")
+        except Exception:
+            logging.exception("Failed to delete menu item token=%s idx=%s", token, idx)
+            await query.message.answer('Произошла ошибка при удалении кнопки.')
         return
 
-    # Calendar navigation handlers
-    if data.startswith('promo_start_date_cal:') or data.startswith('promo_end_date_cal:'):
+    if data.startswith('move_up:') or data.startswith('move_down:') or data.startswith('move_up::') or data.startswith('move_down::'):
+        if not is_admin_view_enabled(username, query.from_user.id):
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        token = extract_token(data)
+        idx = resolve_idx(token)
+        if idx is None:
+            await query.message.answer('Неверный идентификатор кнопки.')
+            return
+        menu = get_menu(DEFAULT_MENU)
+        n = len(menu)
+        if idx < 0 or idx >= n:
+            await query.message.answer('Индекс вне диапазона.')
+            return
+        if data.startswith('move_up') and idx > 0:
+            menu[idx-1], menu[idx] = menu[idx], menu[idx-1]
+            save_menu(menu)
+            await query.message.answer('Кнопка перемещена вверх.')
+        elif data.startswith('move_down') and idx < n-1:
+            menu[idx+1], menu[idx] = menu[idx], menu[idx+1]
+            save_menu(menu)
+            await query.message.answer('Кнопка перемещена вниз.')
+        else:
+            await query.message.answer('Нельзя переместить дальше.')
+        kb = build_menu_edit_kb(menu)
+        await query.message.answer('Обновлённое меню:', reply_markup=kb)
+        return
+
+    if data == 'sort_defaults_first':
         if username not in ADMIN_USERNAMES:
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        
-        # Extract action and date
-        action_type = 'promo_start_date' if data.startswith('promo_start_date_cal:') else 'promo_end_date'
-        date_part = data.split(':', 1)[1]  # Format: 2024-02
-        
-        try:
-            year, month = map(int, date_part.split('-'))
-            from datetime import datetime
-            
-            if action_type == 'promo_start_date':
-                text = '📅 Выберите дату начала акции:'
-            else:
-                text = '📅 Выберите дату окончания акции:'
-            
-            await query.message.edit_text(text, 
-                                          reply_markup=build_promotion_date_keyboard(year, month, action_type))
-        except ValueError:
-            await query.message.answer("❌ Ошибка формата даты.")
+        menu = get_menu(DEFAULT_MENU)
+        defaults = ["portfolio","services","booking","reviews","social"]
+        default_items = [m for key in defaults for m in menu if m.get('callback')==key]
+        other_items = [m for m in menu if m.get('callback') not in defaults]
+        new_menu = default_items + other_items
+        save_menu(new_menu)
+        await query.message.answer('Меню отсортировано: дефолты вынесены в начало.')
+        kb = build_menu_edit_kb(new_menu)
+        await query.message.answer('Обновлённое меню:', reply_markup=kb)
         return
 
-    # Handle promotion deletion
-    if data.startswith('delete_promotion:'):
+    # (confirm_delete / delete_menu branches removed — immediate deletion used)
+
+    if data == 'admin_change_text':
         if username not in ADMIN_USERNAMES:
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        
-        try:
-            promotion_idx = int(data.split(':', 1)[1])
-        except (ValueError, IndexError):
-            await query.message.answer("❌ Ошибка: неверный индекс акции.")
-            return
-        
-        # Get active promotions to find the actual promotion ID
-        promotions = get_active_promotions()
-        if not promotions or promotion_idx >= len(promotions):
-            await query.message.answer("❌ Акция не найдена.")
-            return
-        
-        promotion = promotions[promotion_idx]
-        promo_id, title, description, image_file_id, start_date, end_date, created_by = promotion
-        
-        # Create confirmation keyboard
-        confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_promotion:{promo_id}"),
-                InlineKeyboardButton(text="❌ Отмена", callback_data="promotions")
-            ]
-        ])
-        
-        # Send new message instead of editing (original might be image-only)
-        await query.message.answer(
-            f"🗑️ **Подтверждение удаления**\n\n"
-            f"Вы действительно хотите удалить акцию?\n\n"
-            f"**{title}**\n\n"
-            f"⚠️ Это действие нельзя отменить!",
-            reply_markup=confirm_kb,
-            parse_mode="Markdown"
-        )
+        ADMIN_PENDING_ACTIONS[username] = 'change_text'
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        await query.message.answer('Отправьте новый текст приветствия в сообщении (plain text).')
         return
 
-    # Handle promotion deletion confirmation
-    if data.startswith('confirm_delete_promotion:'):
+    if data == 'admin_change_image':
         if username not in ADMIN_USERNAMES:
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        
-        try:
-            promo_id = int(data.split(':', 1)[1])
-        except (ValueError, IndexError):
-            await query.message.answer("❌ Ошибка: неверный ID акции.")
-            return
-        
-        try:
-            # Delete the promotion from database
-            delete_promotion(promo_id)
-            
-            # Get updated promotions list
-            promotions = get_active_promotions()
-            
-            if not promotions:
-                # No more promotions left
-                if is_admin_view_enabled(username, query.from_user.id):
-                    kb = build_add_promotion_keyboard()
-                    await query.message.edit_text(
-                        "✅ Акция успешно удалена!\n\n"
-                        "🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊", 
-                        reply_markup=kb
-                    )
-                else:
-                    await query.message.edit_text(
-                        "✅ Акция успешно удалена!\n\n"
-                        "🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊"
-                    )
-            else:
-                # Show first remaining promotion
-                await query.message.edit_text("✅ Акция успешно удалена!")
-                await update_promotion_message(query, 0, promotions, is_admin_view_enabled(username, query.from_user.id))
-        except Exception as e:
-            await query.message.edit_text(f"❌ Ошибка при удалении акции: {str(e)}")
+        ADMIN_PENDING_ACTIONS[username] = 'change_image'
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        await query.message.answer('Пришлите изображение, которое хотите установить как приветственное (я сохраню file_id).')
         return
-
-
-async def perform_broadcast(text: str, message: Message):
-    """Send broadcast message to all users."""
-    users = get_all_users()
-    sent = 0
-    failed = 0
-    
-    await message.answer(f"📤 Начинаю рассылку для {len(users)} пользователей...")
-    
-    for user_id, username, first_name, last_name in users:
-        try:
-            await bot.send_message(user_id, text)
-            sent += 1
-        except Exception as e:
-            failed += 1
-            logging.warning(f"Failed to send broadcast to user {user_id}: {e}")
-    
-    await message.answer(
-        f"✅ Рассылка завершена!\n\n"
-        f"📨 Отправлено: {sent}\n"
-        f"❌ Не доставлено: {failed}\n"
-        f"📊 Всего пользователей: {len(users)}"
-    )
 
 
 @dp.message()
@@ -2197,29 +1603,13 @@ async def handle_admin_pending(message: Message):
     if not action:
         return
 
-
-
-    if action == 'broadcast_text':
+    if action == 'change_text':
         if not message.text:
-            await message.answer('Ожидаю текст для рассылки. Пожалуйста, отправьте текст сообщения.')
+            await message.answer('Ожидаю текст. Пожалуйста, пришлите новый текст приветствия.')
             return
-        # Store broadcast text temporarily
-        set_setting(f'broadcast_temp_{username}', message.text)
+        set_setting('welcome_text', message.text)
         ADMIN_PENDING_ACTIONS.pop(username, None)
-        save_pending_actions(ADMIN_PENDING_ACTIONS)
-        
-        users = get_all_users()
-        user_count = len(users)
-        
-        preview_text = message.text[:200] + ("..." if len(message.text) > 200 else "")
-        
-        await message.answer(
-            f"📢 Готов к рассылке!\n\n"
-            f"📝 Текст сообщения:\n{preview_text}\n\n"
-            f"👥 Количество получателей: {user_count}\n\n"
-            f"Подтвердите отправку:",
-            reply_markup=broadcast_confirm_keyboard()
-        )
+        await message.answer('✅ Текст приветствия обновлён.')
         return
     # menu add/edit & category/photo flows
     if action and isinstance(action, dict):
@@ -2350,75 +1740,612 @@ async def handle_admin_pending(message: Message):
             else:
                 await message.answer('Пришлите фото.')
                 return
-    
-    # Promotion management cases
-    if a == 'add_promotion_title':
-        if not message.text:
-            await message.answer('❌ Ожидаю текст заголовка акции. Попробуйте снова.')
+    if a == 'add_menu':
+            # message.text -> text for new button; generate callback from slug
+            if not message.text:
+                await message.answer('Ожидаю текст для кнопки. Пришлите текст одним сообщением.')
+                return
+            text = message.text.strip()
+            if not text:
+                await message.answer('Текст не может быть пустым. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            callback = normalize_callback(text)
+            menu = get_menu(DEFAULT_MENU)
+            # check duplicate callbacks
+            callbacks = {m.get('callback') for m in menu}
+            if callback in callbacks:
+                await message.answer(f'Ошибка: callback "{callback}" уже существует. Измените текст или используйте ручной режим.')
+                return
+            menu.append({'text': text, 'callback': callback})
+            save_menu(menu)
+            # no extra side-effects
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ Кнопка "{text}" добавлена.')
             return
-        title = message.text.strip()
-        if not title:
-            await message.answer('❌ Заголовок не может быть пустым. Попробуйте снова.')
+    if a == 'add_menu_manual':
+            # first step: we expect the text for the button, then ask for callback_data
+            if not message.text:
+                await message.answer('Ожидаю текст для кнопки. Пришлите текст одним сообщением.')
+                return
+            text = message.text.strip()
+            if not text:
+                await message.answer('Текст не может быть пустым. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            # store text in payload and ask for callback_data
+            ADMIN_PENDING_ACTIONS[username] = {'action': 'add_menu_manual_submit', 'payload': {'text': text}}
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer('Теперь пришлите желаемый callback_data для этой кнопки (латиница, цифры, подчеркивания).')
             return
-        
-        ADMIN_PENDING_ACTIONS[username] = {'action': 'add_promotion_description', 'payload': {'title': title}}
-        save_pending_actions(ADMIN_PENDING_ACTIONS)
-        await message.answer(f'✅ Заголовок сохранён: "{title}"\n\n📝 Теперь пришлите описание акции:')
-        return
-    
-    if a == 'add_promotion_description':
-        if not message.text:
-            await message.answer('❌ Ожидаю текст описания акции. Попробуйте снова.')
+    if a == 'add_menu_manual_submit':
+            # expecting payload: {'text': ..., 'callback': ...}
+            text = payload.get('text')
+            callback = payload.get('callback')
+            # If callback not yet provided, treat incoming message as the callback_data
+            if not callback:
+                if not message.text:
+                    await message.answer('Ожидаю callback_data (текст). Отмена.')
+                    ADMIN_PENDING_ACTIONS.pop(username, None)
+                    save_pending_actions(ADMIN_PENDING_ACTIONS)
+                    return
+                callback = normalize_callback(message.text.strip())
+            if not text or not callback:
+                await message.answer('Нет текста или callback_data. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            # normalize callback and validate
+            callback = normalize_callback(callback)
+            menu = get_menu(DEFAULT_MENU)
+            callbacks = {m.get('callback') for m in menu}
+            if callback in callbacks:
+                await message.answer(f'Ошибка: callback "{callback}" уже существует. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            menu.append({'text': text, 'callback': callback})
+            save_menu(menu)
+            # no extra side-effects
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ Кнопка "{text}" с callback "{callback}" добавлена.')
             return
-        description = message.text.strip()
-        if not description:
-            await message.answer('❌ Описание не может быть пустым. Попробуйте снова.')
+    if a == 'edit_menu':
+            idx = payload.get('idx')
+            if idx is None:
+                await message.answer('Нет индекса для редактирования.')
+                return
+            if not message.text:
+                await message.answer('Ожидаю текст для обновления кнопки.')
+                return
+            menu = get_menu(DEFAULT_MENU)
+            if idx < 0 or idx >= len(menu):
+                await message.answer('Индекс вне диапазона.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                return
+            new_text = message.text.strip()
+            if not new_text:
+                await message.answer('Текст не может быть пустым. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            # check that new callback (derived) won't duplicate existing callbacks, unless it's the same button
+            new_callback = normalize_callback(new_text)
+            current_callback = menu[idx].get('callback')
+            callbacks = {i for i in (m.get('callback') for m in menu) if i}
+            if new_callback != current_callback and new_callback in callbacks:
+                await message.answer(f'Ошибка: при преобразовании текста в callback "{new_callback}" обнаружен дубликат. Используйте ручное редактирование.')
+                return
+            old = menu[idx].get('text')
+            menu[idx]['text'] = new_text
+            save_menu(menu)
+            # no extra side-effects
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            await message.answer(f'✅ Кнопка "{old}" -> "{menu[idx]["text"]}" обновлена.')
             return
-        
-        title = payload.get('title')
-        ADMIN_PENDING_ACTIONS[username] = {
-            'action': 'add_promotion_image', 
-            'payload': {'title': title, 'description': description}
-        }
-        save_pending_actions(ADMIN_PENDING_ACTIONS)
-        await message.answer(f'✅ Описание сохранено\n\n🖼️ Теперь пришлите изображение для акции:', reply_markup=build_promotion_image_keyboard())
-        return
-    
-    if a == 'add_promotion_image':
-        title = payload.get('title')
-        description = payload.get('description')
-        image_file_id = None
-        
-        # Handle image
+    if a == 'edit_callback':
+            idx = payload.get('idx')
+            if idx is None:
+                await message.answer('Нет индекса для редактирования callback.')
+                return
+            if not message.text:
+                await message.answer('Ожидаю текст с новым callback_data.')
+                return
+            new_cb = normalize_callback(message.text.strip())
+            menu = get_menu(DEFAULT_MENU)
+            if idx < 0 or idx >= len(menu):
+                await message.answer('Индекс вне диапазона.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            callbacks = {m.get('callback') for m in menu}
+            current_cb = menu[idx].get('callback')
+            if new_cb != current_cb and new_cb in callbacks:
+                await message.answer(f'Ошибка: callback "{new_cb}" уже используется. Выберите другой.')
+                return
+            menu[idx]['callback'] = new_cb
+            save_menu(menu)
+            # no extra side-effects
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ callback для "{menu[idx].get("text")}" обновлён -> "{new_cb}"')
+            return
+    elif action == 'change_image':
         photo = None
         if message.photo:
             photo = message.photo[-1]
-        elif message.document and message.document.mime_type and message.document.mime_type.startswith('image'):
-            image_file_id = message.document.file_id
-        
-        if photo:
-            image_file_id = photo.file_id
-        
-        if not image_file_id:
-            await message.answer('❌ Ожидаю изображение. Используйте кнопку "Без фото" если хотите создать акцию без изображения.')
+        elif message.document and message.document.mime_type.startswith('image'):
+            file_id = message.document.file_id
+            set_setting('welcome_image_file_id', file_id)
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
             return
-        
-        ADMIN_PENDING_ACTIONS[username] = {
-            'action': 'add_promotion_start_date', 
-            'payload': {'title': title, 'description': description, 'image_file_id': image_file_id}
-        }
-        save_pending_actions(ADMIN_PENDING_ACTIONS)
-        from datetime import datetime
-        await message.answer('✅ Изображение сохранено\n\n📅 Выберите дату начала акции:', reply_markup=build_promotion_date_keyboard(datetime.now().year, datetime.now().month, 'promo_start_date'))
-        return
-    
-    if a == 'add_promotion_start_date':
-        # This will be handled by callback, not text message
-        await message.answer('📅 Используйте кнопки календаря для выбора даты начала акции.')
-        return
-    
-    if a == 'add_promotion_end_date':
-        # This will be handled by callback, not text message
-        await message.answer('📅 Используйте кнопки календаря для выбора даты окончания акции.')
+
+        if not photo:
+            await message.answer('Ожидаю изображение (photo). Пришлите, пожалуйста, картинку.')
+            return
+
+        file_id = photo.file_id
+        set_setting('welcome_image_file_id', file_id)
+        ADMIN_PENDING_ACTIONS.pop(username, None)
+        await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
+
+
+@dp.message()
+async def handle_admin_pending(message: Message):
+    username = (message.from_user.username or "").lstrip("@").lower()
+    # allow only if admin mode ON (else ignore silently)
+    if not is_admin_view_enabled(username, message.from_user.id):
         return
 
+    action = ADMIN_PENDING_ACTIONS.get(username)
+    if not action:
+        return
+
+    if action == 'change_text':
+        if not message.text:
+            await message.answer('Ожидаю текст. Пожалуйста, пришлите новый текст приветствия.')
+            return
+        set_setting('welcome_text', message.text)
+        ADMIN_PENDING_ACTIONS.pop(username, None)
+        await message.answer('✅ Текст приветствия обновлён.')
+        return
+    # menu add/edit & category/photo flows
+    if action and isinstance(action, dict):
+        a = action.get('action')
+        payload = action.get('payload', {})
+        if a == 'new_category':
+            if not message.text:
+                await message.answer('Ожидаю название категории. Попробуйте снова.')
+                return
+            title = message.text.strip()
+            if not title:
+                await message.answer('Название не может быть пустым.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            from utils import normalize_callback
+            slug = normalize_callback(title)
+            cats = get_portfolio_categories()
+            if any(c.get('slug') == slug for c in cats):
+                await message.answer(f'Категория со slug "{slug}" уже существует. Измените название.')
+                return
+            cats.append({'text': title, 'slug': slug})
+            set_setting('portfolio_categories', json.dumps(cats, ensure_ascii=False))
+            folder = Path('media') / 'portfolio' / slug
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ Категория "{title}" создана.')
+            kb = build_portfolio_keyboard(cats, is_admin=True)
+            await message.answer('Обновлённый список категорий:', reply_markup=kb)
+            return
+        if a == 'rename_category':
+            if not message.text:
+                await message.answer('Ожидаю новое название. Попробуйте снова.')
+                return
+            new_title = message.text.strip()
+            if not new_title:
+                await message.answer('Название не может быть пустым.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            slug = payload.get('slug')
+            cats = get_portfolio_categories()
+            cat = next((c for c in cats if c.get('slug') == slug), None)
+            if not cat:
+                await message.answer('Категория не найдена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            old_title = cat.get('text')
+            cat['text'] = new_title
+            set_setting('portfolio_categories', json.dumps(cats, ensure_ascii=False))
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ Категория "{old_title}" переименована в "{new_title}".')
+            kb = build_portfolio_keyboard(cats, is_admin=True)
+            await message.answer('Обновлённый список категорий:', reply_markup=kb)
+            return
+    # (удалён дубликат add_photo_cat – используется обновлённая логика выше)
+    if a == 'add_menu':
+        if not message.text:
+            await message.answer('Ожидаю текст для кнопки. Пришлите текст одним сообщением.')
+            return
+        text = message.text.strip()
+        if not text:
+            await message.answer('Текст не может быть пустым. Отмена.')
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            return
+        callback = normalize_callback(text)
+        menu = get_menu(DEFAULT_MENU)
+        callbacks = {m.get('callback') for m in menu}
+        if callback in callbacks:
+            await message.answer(f'Ошибка: callback "{callback}" уже существует. Измените текст или используйте ручной режим.')
+            return
+        menu.append({'text': text, 'callback': callback})
+        save_menu(menu)
+        ADMIN_PENDING_ACTIONS.pop(username, None)
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        await message.answer(f'✅ Кнопка "{text}" добавлена.')
+        return
+    if a == 'add_menu_manual_submit':
+            # expecting payload: {'text': ..., 'callback': ...}
+            text = payload.get('text')
+            callback = payload.get('callback')
+            # If callback not yet provided, treat incoming message as the callback_data
+            if not callback:
+                if not message.text:
+                    await message.answer('Ожидаю callback_data (текст). Отмена.')
+                    ADMIN_PENDING_ACTIONS.pop(username, None)
+                    save_pending_actions(ADMIN_PENDING_ACTIONS)
+                    return
+                callback = normalize_callback(message.text.strip())
+            if not text or not callback:
+                await message.answer('Нет текста или callback_data. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            # normalize callback and validate
+            callback = normalize_callback(callback)
+            menu = get_menu(DEFAULT_MENU)
+            callbacks = {m.get('callback') for m in menu}
+            if callback in callbacks:
+                await message.answer(f'Ошибка: callback "{callback}" уже существует. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            menu.append({'text': text, 'callback': callback})
+            save_menu(menu)
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ Кнопка "{text}" с callback "{callback}" добавлена.')
+            return
+    if a == 'edit_menu':
+            idx = payload.get('idx')
+            if idx is None:
+                await message.answer('Нет индекса для редактирования.')
+                return
+            if not message.text:
+                await message.answer('Ожидаю текст для обновления кнопки.')
+                return
+            menu = get_menu(DEFAULT_MENU)
+            if idx < 0 or idx >= len(menu):
+                await message.answer('Индекс вне диапазона.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                return
+            new_text = message.text.strip()
+            if not new_text:
+                await message.answer('Текст не может быть пустым. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            # check that new callback (derived) won't duplicate existing callbacks, unless it's the same button
+            new_callback = normalize_callback(new_text)
+            current_callback = menu[idx].get('callback')
+            callbacks = {i for i in (m.get('callback') for m in menu) if i}
+            if new_callback != current_callback and new_callback in callbacks:
+                await message.answer(f'Ошибка: при преобразовании текста в callback "{new_callback}" обнаружен дубликат. Используйте ручное редактирование.')
+                return
+            old = menu[idx].get('text')
+            menu[idx]['text'] = new_text
+            save_menu(menu)
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            await message.answer(f'✅ Кнопка "{old}" -> "{menu[idx]["text"]}" обновлена.')
+            return
+    if a == 'edit_callback':
+            idx = payload.get('idx')
+            if idx is None:
+                await message.answer('Нет индекса для редактирования callback.')
+                return
+            if not message.text:
+                await message.answer('Ожидаю текст с новым callback_data.')
+                return
+            new_cb = normalize_callback(message.text.strip())
+            menu = get_menu(DEFAULT_MENU)
+            if idx < 0 or idx >= len(menu):
+                await message.answer('Индекс вне диапазона.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            callbacks = {m.get('callback') for m in menu}
+            current_cb = menu[idx].get('callback')
+            if new_cb != current_cb and new_cb in callbacks:
+                await message.answer(f'Ошибка: callback "{new_cb}" уже используется. Выберите другой.')
+                return
+            menu[idx]['callback'] = new_cb
+            save_menu(menu)
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ callback для "{menu[idx].get("text")}" обновлён -> "{new_cb}"')
+            return
+    elif action == 'change_image':
+        photo = None
+        if message.photo:
+            photo = message.photo[-1]
+        elif message.document and message.document.mime_type.startswith('image'):
+            file_id = message.document.file_id
+            set_setting('welcome_image_file_id', file_id)
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
+            return
+
+        if not photo:
+            await message.answer('Ожидаю изображение (photo). Пришлите, пожалуйста, картинку.')
+            return
+
+        file_id = photo.file_id
+        set_setting('welcome_image_file_id', file_id)
+        ADMIN_PENDING_ACTIONS.pop(username, None)
+        await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
+
+
+@dp.message()
+async def handle_admin_pending(message: Message):
+    username = (message.from_user.username or "").lstrip("@").lower()
+    # allow only if admin mode ON (else ignore silently)
+    if not is_admin_view_enabled(username, message.from_user.id):
+        return
+
+    action = ADMIN_PENDING_ACTIONS.get(username)
+    if not action:
+        return
+
+    if action == 'change_text':
+        if not message.text:
+            await message.answer('Ожидаю текст. Пожалуйста, пришлите новый текст приветствия.')
+            return
+        set_setting('welcome_text', message.text)
+        ADMIN_PENDING_ACTIONS.pop(username, None)
+        await message.answer('✅ Текст приветствия обновлён.')
+        return
+    # menu add/edit & category/photo flows
+    if action and isinstance(action, dict):
+        a = action.get('action')
+        payload = action.get('payload', {})
+        if a == 'new_category':
+            if not message.text:
+                await message.answer('Ожидаю название категории. Попробуйте снова.')
+                return
+            title = message.text.strip()
+            if not title:
+                await message.answer('Название не может быть пустым.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            from utils import normalize_callback
+            slug = normalize_callback(title)
+            cats = get_portfolio_categories()
+            if any(c.get('slug') == slug for c in cats):
+                await message.answer(f'Категория со slug "{slug}" уже существует. Измените название.')
+                return
+            cats.append({'text': title, 'slug': slug})
+            set_setting('portfolio_categories', json.dumps(cats, ensure_ascii=False))
+            folder = Path('media') / 'portfolio' / slug
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ Категория "{title}" создана.')
+            kb = build_portfolio_keyboard(cats, is_admin=True)
+            await message.answer('Обновлённый список категорий:', reply_markup=kb)
+            return
+        if a == 'rename_category':
+            if not message.text:
+                await message.answer('Ожидаю новое название. Попробуйте снова.')
+                return
+            new_title = message.text.strip()
+            if not new_title:
+                await message.answer('Название не может быть пустым.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            slug = payload.get('slug')
+            cats = get_portfolio_categories()
+            cat = next((c for c in cats if c.get('slug') == slug), None)
+            if not cat:
+                await message.answer('Категория не найдена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            old_title = cat.get('text')
+            cat['text'] = new_title
+            set_setting('portfolio_categories', json.dumps(cats, ensure_ascii=False))
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ Категория "{old_title}" переименована в "{new_title}".')
+            kb = build_portfolio_keyboard(cats, is_admin=True)
+            await message.answer('Обновлённый список категорий:', reply_markup=kb)
+            return
+    # (duplicate add_photo_cat handler removed – unified implementation earlier)
+    if a == 'add_menu':
+            # message.text -> text for new button; generate callback from slug
+            if not message.text:
+                await message.answer('Ожидаю текст для кнопки. Пришлите текст одним сообщением.')
+                return
+            text = message.text.strip()
+            if not text:
+                await message.answer('Текст не может быть пустым. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            callback = normalize_callback(text)
+            menu = get_menu(DEFAULT_MENU)
+            # check duplicate callbacks
+            callbacks = {m.get('callback') for m in menu}
+            if callback in callbacks:
+                await message.answer(f'Ошибка: callback "{callback}" уже существует. Измените текст или используйте ручной режим.')
+                return
+            menu.append({'text': text, 'callback': callback})
+            save_menu(menu)
+            try:
+                pass
+            except Exception:
+                pass
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ Кнопка "{text}" добавлена.')
+            return
+    if a == 'add_menu_manual':
+            # first step: we expect the text for the button, then ask for callback_data
+            if not message.text:
+                await message.answer('Ожидаю текст для кнопки. Пришлите текст одним сообщением.')
+                return
+            text = message.text.strip()
+            if not text:
+                await message.answer('Текст не может быть пустым. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            # store text in payload and ask for callback_data
+            ADMIN_PENDING_ACTIONS[username] = {'action': 'add_menu_manual_submit', 'payload': {'text': text}}
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer('Теперь пришлите желаемый callback_data для этой кнопки (латиница, цифры, подчеркивания).')
+            return
+    if a == 'add_menu_manual_submit':
+            # expecting payload: {'text': ..., 'callback': ...}
+            text = payload.get('text')
+            callback = payload.get('callback')
+            # If callback not yet provided, treat incoming message as the callback_data
+            if not callback:
+                if not message.text:
+                    await message.answer('Ожидаю callback_data (текст). Отмена.')
+                    ADMIN_PENDING_ACTIONS.pop(username, None)
+                    save_pending_actions(ADMIN_PENDING_ACTIONS)
+                    return
+                callback = normalize_callback(message.text.strip())
+            if not text or not callback:
+                await message.answer('Нет текста или callback_data. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            # normalize callback and validate
+            callback = normalize_callback(callback)
+            menu = get_menu(DEFAULT_MENU)
+            callbacks = {m.get('callback') for m in menu}
+            if callback in callbacks:
+                await message.answer(f'Ошибка: callback "{callback}" уже существует. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            menu.append({'text': text, 'callback': callback})
+            save_menu(menu)
+            try:
+                pass
+            except Exception:
+                pass
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ Кнопка "{text}" с callback "{callback}" добавлена.')
+            return
+    if a == 'edit_menu':
+            idx = payload.get('idx')
+            if idx is None:
+                await message.answer('Нет индекса для редактирования.')
+                return
+            if not message.text:
+                await message.answer('Ожидаю текст для обновления кнопки.')
+                return
+            menu = get_menu(DEFAULT_MENU)
+            if idx < 0 or idx >= len(menu):
+                await message.answer('Индекс вне диапазона.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                return
+            new_text = message.text.strip()
+            if not new_text:
+                await message.answer('Текст не может быть пустым. Отмена.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            # check that new callback (derived) won't duplicate existing callbacks, unless it's the same button
+            new_callback = normalize_callback(new_text)
+            current_callback = menu[idx].get('callback')
+            callbacks = {i for i in (m.get('callback') for m in menu) if i}
+            if new_callback != current_callback and new_callback in callbacks:
+                await message.answer(f'Ошибка: при преобразовании текста в callback "{new_callback}" обнаружен дубликат. Используйте ручное редактирование.')
+                return
+            old = menu[idx].get('text')
+            menu[idx]['text'] = new_text
+            save_menu(menu)
+            try:
+                pass
+            except Exception:
+                pass
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            await message.answer(f'✅ Кнопка "{old}" -> "{menu[idx]["text"]}" обновлена.')
+            return
+    if a == 'edit_callback':
+            idx = payload.get('idx')
+            if idx is None:
+                await message.answer('Нет индекса для редактирования callback.')
+                return
+            if not message.text:
+                await message.answer('Ожидаю текст с новым callback_data.')
+                return
+            new_cb = normalize_callback(message.text.strip())
+            menu = get_menu(DEFAULT_MENU)
+            if idx < 0 or idx >= len(menu):
+                await message.answer('Индекс вне диапазона.')
+                ADMIN_PENDING_ACTIONS.pop(username, None)
+                save_pending_actions(ADMIN_PENDING_ACTIONS)
+                return
+            callbacks = {m.get('callback') for m in menu}
+            current_cb = menu[idx].get('callback')
+            if new_cb != current_cb and new_cb in callbacks:
+                await message.answer(f'Ошибка: callback "{new_cb}" уже используется. Выберите другой.')
+                return
+            menu[idx]['callback'] = new_cb
+            save_menu(menu)
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            await message.answer(f'✅ callback для "{menu[idx].get("text")}" обновлён -> "{new_cb}"')
+            return
+    elif action == 'change_image':
+        photo = None
+        if message.photo:
+            photo = message.photo[-1]
+        elif message.document and message.document.mime_type.startswith('image'):
+            file_id = message.document.file_id
+            set_setting('welcome_image_file_id', file_id)
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
+            return
+
+        if not photo:
+            await message.answer('Ожидаю изображение (photo). Пришлите, пожалуйста, картинку.')
+            return
+
+        file_id = photo.file_id
+        set_setting('welcome_image_file_id', file_id)
+        ADMIN_PENDING_ACTIONS.pop(username, None)
+        await message.answer('✅ Картинка приветствия обновлена (file_id сохранён).')
