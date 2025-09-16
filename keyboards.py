@@ -151,16 +151,16 @@ def build_main_keyboard_from_menu(menu: list, is_admin: bool) -> InlineKeyboardM
     if row:
         rows.append(row)
     if is_admin:
-        rows.append([InlineKeyboardButton(text="Администрирование", callback_data="admin")])
+        rows.append([InlineKeyboardButton(text="🔧 Администрирование", callback_data="admin")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_panel_keyboard(admin_mode_on: Optional[bool] = None) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="Изменить текст приветствия", callback_data="admin_change_text")],
         [InlineKeyboardButton(text="Изменить картинку приветствия", callback_data="admin_change_image")],
         [InlineKeyboardButton(text="Управление меню", callback_data="admin_manage_menu")],
         [InlineKeyboardButton(text="Просмотреть структуру меню", callback_data="view_menu")],
+        [InlineKeyboardButton(text="📢 Рассылка сообщений", callback_data="admin_broadcast")],
     ]
     if admin_mode_on is not None:
         toggle_text = "👁 Режим администратора: ВЫКЛ (включить)" if not admin_mode_on else "👁 Режим администратора: ВКЛ (выключить)"
@@ -268,3 +268,116 @@ def build_wedding_packages_nav_keyboard(package_idx: int) -> InlineKeyboardMarku
         ],
         [InlineKeyboardButton(text="⬅️ Услуги", callback_data="services")]
     ])
+
+
+def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for broadcast confirmation."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, отправить", callback_data="broadcast_confirm"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel")
+        ]
+    ])
+
+
+def build_promotions_keyboard(promotion_idx: int = 0, is_admin: bool = False) -> InlineKeyboardMarkup:
+    """Build navigation keyboard for promotions."""
+    buttons = []
+    
+    # Navigation buttons if more than one promotion
+    if promotion_idx >= 0:  # We assume there's at least one promotion
+        nav_row = [
+            InlineKeyboardButton(text="◀️", callback_data=f"promo_prev:{promotion_idx}"),
+            InlineKeyboardButton(text="▶️", callback_data=f"promo_next:{promotion_idx}"),
+        ]
+        buttons.append(nav_row)
+    
+    # Admin buttons
+    if is_admin:
+        admin_row = [
+            InlineKeyboardButton(text="➕ Добавить акцию", callback_data="add_promotion"),
+            InlineKeyboardButton(text="🗑 Удалить эту акцию", callback_data=f"delete_promotion:{promotion_idx}")
+        ]
+        buttons.append(admin_row)
+    
+    # Back button
+    buttons.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def build_add_promotion_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for adding promotions (admin only)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить акцию", callback_data="add_promotion")],
+        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
+    ])
+
+
+def build_promotion_image_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for promotion image selection."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚫 Без фото", callback_data="promo_no_image")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="promotions")]
+    ])
+
+
+def build_promotion_date_keyboard(year: int, month: int, action_prefix: str) -> InlineKeyboardMarkup:
+    """Build calendar keyboard for promotion date selection."""
+    import calendar
+    from datetime import datetime
+    
+    # Get calendar for the month
+    cal = calendar.monthcalendar(year, month)
+    month_name = calendar.month_name[month]
+    
+    buttons = []
+    
+    # Header with month/year
+    buttons.append([InlineKeyboardButton(text=f"{month_name} {year}", callback_data="ignore")])
+    
+    # Week days header
+    buttons.append([
+        InlineKeyboardButton(text="Пн", callback_data="ignore"),
+        InlineKeyboardButton(text="Вт", callback_data="ignore"),
+        InlineKeyboardButton(text="Ср", callback_data="ignore"),
+        InlineKeyboardButton(text="Чт", callback_data="ignore"),
+        InlineKeyboardButton(text="Пт", callback_data="ignore"),
+        InlineKeyboardButton(text="Сб", callback_data="ignore"),
+        InlineKeyboardButton(text="Вс", callback_data="ignore"),
+    ])
+    
+    # Calendar days
+    today = datetime.now()
+    for week in cal:
+        week_buttons = []
+        for day in week:
+            if day == 0:
+                week_buttons.append(InlineKeyboardButton(text=" ", callback_data="ignore"))
+            else:
+                # Don't allow past dates
+                date_obj = datetime(year, month, day)
+                if date_obj < today.replace(hour=0, minute=0, second=0, microsecond=0):
+                    week_buttons.append(InlineKeyboardButton(text=str(day), callback_data="ignore"))
+                else:
+                    week_buttons.append(InlineKeyboardButton(
+                        text=str(day), 
+                        callback_data=f"{action_prefix}:{year}-{month:02d}-{day:02d}"
+                    ))
+        buttons.append(week_buttons)
+    
+    # Navigation buttons
+    prev_month = month - 1 if month > 1 else 12
+    prev_year = year if month > 1 else year - 1
+    next_month = month + 1 if month < 12 else 1
+    next_year = year if month < 12 else year + 1
+    
+    buttons.append([
+        InlineKeyboardButton(text="◀️", callback_data=f"{action_prefix}_cal:{prev_year}-{prev_month:02d}"),
+        InlineKeyboardButton(text="▶️", callback_data=f"{action_prefix}_cal:{next_year}-{next_month:02d}")
+    ])
+    
+    # Cancel button
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="promotions")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

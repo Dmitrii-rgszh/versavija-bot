@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 import json
 import os
+from typing import Optional, Dict
 
 # Allow overriding DB location via environment variable (e.g. for Docker volume)
 _default_db = Path(__file__).parent / 'data.db'
@@ -32,11 +33,31 @@ def init_db() -> None:
     except Exception:
         pass
     cur.execute('CREATE INDEX IF NOT EXISTS idx_bookings_start ON bookings(start_ts)')
+    # Create users table for broadcast functionality
+    cur.execute('''CREATE TABLE IF NOT EXISTS users(
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        last_seen TEXT
+    )''')
+    # Create promotions table for special offers
+    cur.execute('''CREATE TABLE IF NOT EXISTS promotions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        image_file_id TEXT,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    )''')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_promotions_dates ON promotions(start_date, end_date)')
     con.commit()
     con.close()
 
 
-def get_menu(default: list | None = None) -> list:
+def get_menu(default: Optional[list] = None) -> list:
     """Return menu as a list of button dicts: [{'text':..., 'callback':...}, ...]"""
     raw = get_setting('menu', None)
     if not raw:
@@ -89,7 +110,7 @@ def save_pending_actions(pending: dict) -> None:
     set_setting('pending_actions', json.dumps(pending, ensure_ascii=False))
 
 
-def get_setting(key: str, default: str | None = None) -> str | None:
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute('SELECT value FROM settings WHERE key=?', (key,))
@@ -138,7 +159,7 @@ def is_slot_taken(start_ts: str) -> bool:
     return taken
 
 
-def get_booking(bid: int) -> dict | None:
+def get_booking(bid: int) -> Optional[Dict]:
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute('SELECT id,user_id,username,chat_id,start_ts,status,category,reminder_sent FROM bookings WHERE id=?', (bid,))
@@ -149,7 +170,7 @@ def get_booking(bid: int) -> dict | None:
     return {'id': r[0], 'user_id': r[1], 'username': r[2], 'chat_id': r[3], 'start_ts': r[4], 'status': r[5], 'category': r[6], 'reminder_sent': r[7]}
 
 
-def get_active_booking_for_user(user_id: int) -> dict | None:
+def get_active_booking_for_user(user_id: int) -> Optional[Dict]:
     """Return the latest active booking (status active/confirmed) for a user, if any."""
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
@@ -206,3 +227,90 @@ def clear_all_bookings():
     cur.execute('DELETE FROM bookings')
     con.commit()
     con.close()
+
+
+def add_user(user_id: int, username: str = None, first_name: str = None, last_name: str = None):
+    """Add or update user in the database."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('''INSERT OR REPLACE INTO users 
+                   (user_id, username, first_name, last_name, last_seen) 
+                   VALUES (?, ?, ?, ?, datetime('now'))''',
+                (user_id, username, first_name, last_name))
+    con.commit()
+    con.close()
+
+
+def get_all_users():
+    """Get all users from the database."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('SELECT user_id, username, first_name, last_name FROM users')
+    users = cur.fetchall()
+    con.close()
+    return users
+
+
+def add_promotion(title: str, description: str, start_date: str, end_date: str, 
+                  created_by: str, image_file_id: str = None):
+    """Add a new promotion to the database."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('''INSERT INTO promotions 
+                   (title, description, image_file_id, start_date, end_date, created_by) 
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                (title, description, image_file_id, start_date, end_date, created_by))
+    promotion_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return promotion_id
+
+
+def get_active_promotions():
+    """Get all active promotions (current date between start_date and end_date)."""
+    from datetime import datetime
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('''SELECT id, title, description, image_file_id, start_date, end_date, created_by
+                   FROM promotions 
+                   WHERE start_date <= ? AND end_date >= ?
+                   ORDER BY created_at DESC''', (today, today))
+    promotions = cur.fetchall()
+    con.close()
+    return promotions
+
+
+def get_all_promotions():
+    """Get all promotions regardless of date."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('''SELECT id, title, description, image_file_id, start_date, end_date, created_by
+                   FROM promotions ORDER BY created_at DESC''')
+    promotions = cur.fetchall()
+    con.close()
+    return promotions
+
+
+def delete_promotion(promotion_id: int):
+    """Delete a promotion by ID."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('DELETE FROM promotions WHERE id = ?', (promotion_id,))
+    con.commit()
+    con.close()
+
+
+def cleanup_expired_promotions():
+    """Remove expired promotions from database."""
+    from datetime import datetime
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute('DELETE FROM promotions WHERE end_date < ?', (today,))
+    deleted_count = cur.rowcount
+    con.commit()
+    con.close()
+    return deleted_count

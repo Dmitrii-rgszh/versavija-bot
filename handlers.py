@@ -15,7 +15,8 @@ from aiogram.filters import Command
 from config import bot, dp, ADMIN_IDS
 from db import get_setting, set_setting, get_menu, save_menu, get_pending_actions, save_pending_actions
 from db import add_booking, is_slot_taken, get_bookings_between, get_booking, update_booking_status, clear_all_bookings
-from db import get_active_booking_for_user, update_booking_time_and_category
+from db import get_active_booking_for_user, update_booking_time_and_category, add_user, get_all_users
+from db import add_promotion, get_active_promotions, get_all_promotions, delete_promotion, cleanup_expired_promotions
 from keyboards import (
     build_main_keyboard_from_menu,
     admin_panel_keyboard,
@@ -38,6 +39,11 @@ from keyboards import (
     build_confirm_delete_all_photos_kb,
     build_services_keyboard,
     build_wedding_packages_nav_keyboard,
+    broadcast_confirm_keyboard,
+    build_promotions_keyboard,
+    build_add_promotion_keyboard,
+    build_promotion_date_keyboard,
+    build_promotion_image_keyboard,
     ADMIN_USERNAMES,
 )
 
@@ -48,21 +54,17 @@ UNDO_DELETED_CATEGORY_PHOTOS: dict[str, list] = {}
 UNDO_DELETED_PHOTO: dict[str, str] = {}
 
 WELCOME_TEXT = (
-    "👋 Приветствуем в официальном Telegram-боте профессионального фотографа!\n\n"
-    "📸 Здесь вы можете ознакомиться с портфолио, выбрать оптимальный пакет услуг и записаться онлайн на фотосессию.\n\n"
-    "✨ Погрузитесь в мир качественной фотографии, подчеркните свою индивидуальность и сохраните лучшие моменты жизни!\n\n"
-    "🔎 Удобный выбор пакетов, прозрачные цены и быстрая запись — всё для вашего комфорта.\n\n"
-    "💬 Начните прямо сейчас: выберите интересующий пакет и забронируйте дату фотосессии!\n\n"
-    "#фотограф #фотосессия #портфолио #онлайнзапись #фотосъемка #услугифотографа"
+    "Выберите действие:"
 )
 
 # default menu used when DB has no saved menu
 DEFAULT_MENU = [
-    {"text": "Портфолио", "callback": "portfolio"},
-    {"text": "Услуги и цены", "callback": "services"},
-    {"text": "Онлайн-запись", "callback": "booking"},
-    {"text": "Отзывы", "callback": "reviews"},
-    {"text": "Соцсети", "callback": "social"},
+    {"text": "📸 Портфолио", "callback": "portfolio"},
+    {"text": "💰 Услуги и цены", "callback": "services"},
+    {"text": "📅 Онлайн-запись", "callback": "booking"},
+    {"text": "🎉 Акции", "callback": "promotions"},
+    {"text": "⭐ Отзывы", "callback": "reviews"},
+    {"text": "📱 Соцсети", "callback": "social"},
 ]
 
 # default portfolio categories
@@ -250,13 +252,17 @@ CHILDREN_SERVICE = {
 
 # IDs of users for whom we show dynamic booking status button (can be extended)
 def _load_booking_status_user_ids() -> set[int]:
-    raw = get_setting('booking_status_user_ids', '') or ''
-    ids = set()
-    for part in raw.split(','):
-        part = part.strip()
-        if part.isdigit():
-            ids.add(int(part))
-    return ids
+    try:
+        raw = get_setting('booking_status_user_ids', '') or ''
+        ids = set()
+        for part in raw.split(','):
+            part = part.strip()
+            if part.isdigit():
+                ids.add(int(part))
+        return ids
+    except Exception:
+        # If DB not initialized yet, return empty set
+        return set()
 
 BOOKING_STATUS_USER_IDS = _load_booking_status_user_ids()
 
@@ -272,7 +278,12 @@ async def _set_static_commands():
     try:
         await bot.set_my_commands([
             BotCommand(command='start', description='Главное меню'),
-            BotCommand(command='help', description='Справка'),
+            BotCommand(command='portfolio', description='📸 Портфолио'),
+            BotCommand(command='services', description='💰 Услуги и цены'),
+            BotCommand(command='booking', description='📅 Онлайн-запись'),
+            BotCommand(command='promotions', description='🎉 Акции'),
+            BotCommand(command='reviews', description='⭐ Отзывы'),
+            BotCommand(command='social', description='📱 Соцсети'),
             BotCommand(command='adminmode', description='Админ режим'),
         ])
     except Exception as e:
@@ -310,7 +321,11 @@ def get_portfolio_categories() -> list:
 
 # временное состояние для ожидающих действий админа: username -> action
 # persisted to DB so flow survives restarts
-ADMIN_PENDING_ACTIONS: dict = get_pending_actions()
+try:
+    ADMIN_PENDING_ACTIONS: dict = get_pending_actions()
+except Exception:
+    # If DB not initialized yet, use empty dict
+    ADMIN_PENDING_ACTIONS: dict = {}
 
 
 def _user_is_admin(username: str, user_id: int) -> bool:
@@ -384,13 +399,22 @@ async def refresh_commands(message: Message):
     if not _user_is_admin(username, message.from_user.id):
         return
     await _set_static_commands()
-    await message.answer('✅ Команды: /start /help /adminmode.')
+    await message.answer('✅ Команды обновлены! Список:\n/start - Главное меню\n/portfolio - Портфолио\n/services - Услуги и цены\n/booking - Онлайн-запись\n/promotions - Акции\n/reviews - Отзывы\n/social - Соцсети\n/adminmode - Админ режим')
 
 
-@dp.message(Command(commands=['start', 'help']))
+@dp.message(Command(commands=['start']))
 async def send_welcome(message: Message):
     username = (message.from_user.username or "").lstrip("@").lower()
     user_id = message.from_user.id
+    
+    # Save user to database for broadcast functionality
+    add_user(
+        user_id=user_id, 
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+        last_name=message.from_user.last_name
+    )
+    
     is_admin = is_admin_view_enabled(username, user_id)
     # load menu from DB (default menu if none)
     menu = get_menu(DEFAULT_MENU)
@@ -398,33 +422,40 @@ async def send_welcome(message: Message):
     keyboard = _inject_booking_status_button(keyboard, user_id)
     await _set_static_commands()
 
-    # Загружаем текст и image_file_id из БД, если они заданы
-    db_text = get_setting('welcome_text', WELCOME_TEXT)
+    # Отправляем только фото приветствия без текста (текст теперь в описании BotFather)
     image_file_id = get_setting('welcome_image_file_id', None)
-
-    # если в БД есть file_id — попытаемся отправить его как фото
+    
+    # если в БД есть file_id — отправляем фото без caption
     if image_file_id:
         try:
-            await message.answer_photo(photo=image_file_id, caption=db_text)
-            await bot.send_message(chat_id=message.chat.id, text="Выберите действие ниже:", reply_markup=keyboard)
-            return
+            await message.answer_photo(photo=image_file_id)
         except Exception:
-            logging.exception('Failed to send photo by file_id, will try local file or text')
-
-    media_path = pathlib.Path(__file__).parent / 'media' / 'greetings.png'
-    if media_path.exists():
-        photo = FSInputFile(pathlib.Path(media_path))
-        await message.answer_photo(photo=photo, caption=db_text)
+            logging.exception('Failed to send photo by file_id, will try local file')
+            # Fallback to local file
+            media_path = pathlib.Path(__file__).parent / 'media' / 'greetings.png'
+            if media_path.exists():
+                photo = FSInputFile(pathlib.Path(media_path))
+                try:
+                    await message.answer_photo(photo=photo)
+                except Exception:
+                    logging.exception('Failed to send local photo')
     else:
-        await message.answer(db_text)
+        # Попробуем отправить локальное фото
+        media_path = pathlib.Path(__file__).parent / 'media' / 'greetings.png'
+        if media_path.exists():
+            photo = FSInputFile(pathlib.Path(media_path))
+            try:
+                await message.answer_photo(photo=photo)
+            except Exception:
+                logging.exception('Failed to send local photo')
 
     try:
-        await bot.send_message(chat_id=message.chat.id, text="Выберите действие ниже:", reply_markup=keyboard)
+        await bot.send_message(chat_id=message.chat.id, text="Выберите действие:", reply_markup=keyboard)
         logging.info("Keyboard sent to chat %s (user=%s)", message.chat.id, username)
     except Exception:
         logging.exception("Failed to send keyboard via bot.send_message, falling back to message.answer")
         try:
-            await message.answer("Выберите действие ниже:", reply_markup=keyboard)
+            await message.answer("Выберите действие:", reply_markup=keyboard)
         except Exception:
             logging.exception("Fallback message.answer also failed")
 
@@ -432,8 +463,226 @@ async def send_welcome(message: Message):
     # End of send_welcome
 
 
+async def update_promotion_message(query, promotion_idx: int, promotions: list, is_admin: bool = False):
+    """Update existing promotion message with navigation."""
+    if not promotions:
+        await query.message.edit_text("🎉 На текущий момент нет действующих акций.")
+        return
+    
+    # Ensure valid index
+    if promotion_idx >= len(promotions):
+        promotion_idx = 0
+    elif promotion_idx < 0:
+        promotion_idx = len(promotions) - 1
+    
+    promotion = promotions[promotion_idx]
+    promo_id, title, description, image_file_id, start_date, end_date, created_by = promotion
+    
+    # Format the message
+    from datetime import datetime
+    try:
+        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+        formatted_end_date = end_date_obj.strftime('%d.%m.%Y')
+    except:
+        formatted_end_date = end_date
+    
+    text = f"🎉 {title}\n\n{description}\n\n📅 Акция действует до {formatted_end_date}"
+    
+    if len(promotions) > 1:
+        text += f"\n\n📄 {promotion_idx + 1} из {len(promotions)}"
+    
+    kb = build_promotions_keyboard(promotion_idx, is_admin)
+    
+    # Check if the current message has photo
+    current_has_photo = query.message.photo is not None
+    new_has_photo = image_file_id is not None
+    
+    try:
+        if current_has_photo and new_has_photo:
+            # Both current and new message have photos - update media
+            from aiogram.types import InputMediaPhoto
+            media = InputMediaPhoto(media=image_file_id, caption=text)
+            await query.message.edit_media(media=media, reply_markup=kb)
+        elif current_has_photo and not new_has_photo:
+            # Current has photo, new doesn't - delete current and send text message
+            await query.message.delete()
+            from config import bot
+            await bot.send_message(chat_id=query.message.chat.id, text=text, reply_markup=kb)
+        elif not current_has_photo and new_has_photo:
+            # Current is text, new has photo - delete current and send photo message
+            await query.message.delete()
+            from config import bot
+            await bot.send_photo(chat_id=query.message.chat.id, photo=image_file_id, caption=text, reply_markup=kb)
+        else:
+            # Both are text messages - edit text
+            await query.message.edit_text(text, reply_markup=kb)
+    except Exception as e:
+        logging.warning(f"Failed to update promotion message: {e}")
+        # Fallback: delete current message and send new one
+        try:
+            await query.message.delete()
+            from config import bot
+            if image_file_id:
+                await bot.send_photo(chat_id=query.message.chat.id, photo=image_file_id, caption=text, reply_markup=kb)
+            else:
+                await bot.send_message(chat_id=query.message.chat.id, text=text, reply_markup=kb)
+        except Exception as e2:
+            logging.error(f"Fallback also failed: {e2}")
+            # Last resort: just edit the text without image
+            try:
+                await query.message.edit_text(text, reply_markup=kb)
+            except:
+                pass
+
+
+async def show_promotion(message, promotion_idx: int, promotions: list = None, is_admin: bool = False):
+    """Show a specific promotion with navigation."""
+    if promotions is None:
+        promotions = get_active_promotions()
+    
+    if not promotions:
+        if is_admin:
+            kb = build_add_promotion_keyboard()
+            await message.answer(
+                "🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊\n\n"
+                "Как администратор, вы можете добавить новую акцию:", 
+                reply_markup=kb
+            )
+        else:
+            await message.answer("🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊")
+        return
+    
+    # Ensure valid index
+    if promotion_idx >= len(promotions):
+        promotion_idx = 0
+    elif promotion_idx < 0:
+        promotion_idx = len(promotions) - 1
+    
+    promotion = promotions[promotion_idx]
+    promo_id, title, description, image_file_id, start_date, end_date, created_by = promotion
+    
+    # Format the message
+    from datetime import datetime
+    try:
+        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+        formatted_end_date = end_date_obj.strftime('%d.%m.%Y')
+    except:
+        formatted_end_date = end_date
+    
+    text = f"🎉 {title}\n\n{description}\n\n📅 Акция действует до {formatted_end_date}"
+    
+    if len(promotions) > 1:
+        text += f"\n\n📄 {promotion_idx + 1} из {len(promotions)}"
+    
+    kb = build_promotions_keyboard(promotion_idx, is_admin)
+    
+    try:
+        if image_file_id:
+            await message.answer_photo(photo=image_file_id, caption=text, reply_markup=kb)
+        else:
+            await message.answer(text, reply_markup=kb)
+    except Exception as e:
+        logging.warning(f"Failed to send promotion: {e}")
+        await message.answer(text, reply_markup=kb)
+
+
+# Command handlers for menu items
+@dp.message(Command(commands=['portfolio']))
+async def cmd_portfolio(message: Message):
+    """Handle /portfolio command"""
+    username = (message.from_user.username or "").lstrip("@").lower()
+    cats = get_portfolio_categories()
+    is_admin = is_admin_view_enabled(username, message.from_user.id)
+    kb = build_portfolio_keyboard(cats, is_admin=is_admin)
+    await message.answer("📁 Выберите категорию портфолио:", reply_markup=kb)
+
+@dp.message(Command(commands=['services']))
+async def cmd_services(message: Message):
+    """Handle /services command"""
+    kb = build_services_keyboard()
+    await message.answer("💼 Услуги и цены: выберите категорию", reply_markup=kb)
+
+@dp.message(Command(commands=['booking']))
+async def cmd_booking(message: Message):
+    """Handle /booking command"""
+    from datetime import datetime, timedelta, timezone
+    BOOK_TZ = timezone.utc
+    
+    # Check if user already has a booking
+    user_id = message.from_user.id
+    bk = get_active_booking_for_user(user_id)
+    if bk:
+        dt = datetime.fromisoformat(bk['start_ts'])
+        txt = (f'📅 Ваша запись:\n'
+               f'Время: {dt.strftime("%H:%M %d.%m.%Y")}\n'
+               f'Категория: {bk.get("category") or "—"}')
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='Перенести', callback_data=f'bk_resch:{bk["id"]}')],
+            [InlineKeyboardButton(text='Отменить', callback_data=f'bk_cancel_booking:{bk["id"]}')],
+            [InlineKeyboardButton(text='⬅️ В меню', callback_data='back_main')]
+        ])
+        await message.answer(txt, reply_markup=kb)
+        return
+    
+    # Start booking process
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='📅 Записаться', callback_data='booking')],
+        [InlineKeyboardButton(text='⬅️ В меню', callback_data='back_main')]
+    ])
+    await message.answer("📅 Онлайн-запись на фотосессию", reply_markup=kb)
+
+@dp.message(Command(commands=['promotions']))
+async def cmd_promotions(message: Message):
+    """Handle /promotions command"""
+    username = (message.from_user.username or "").lstrip("@").lower()
+    
+    # Cleanup expired promotions first
+    cleanup_expired_promotions()
+    
+    # Get active promotions
+    promotions = get_active_promotions()
+    is_admin = is_admin_view_enabled(username, message.from_user.id)
+    
+    if not promotions:
+        # No active promotions
+        if is_admin:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Добавить акцию", callback_data="add_promotion")],
+                [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_main")]
+            ])
+            await message.answer("🎉 На текущий момент нет действующих акций.\n\nВы можете добавить новую акцию:", reply_markup=kb)
+        else:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_main")]
+            ])
+            await message.answer("🎉 На текущий момент нет действующих акций.", reply_markup=kb)
+        return
+    
+    # Show first promotion
+    await show_promotion(message, 0, promotions, is_admin)
+
+@dp.message(Command(commands=['reviews']))
+async def cmd_reviews(message: Message):
+    """Handle /reviews command"""
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_main")]
+    ])
+    await message.answer("⭐ Отзывы клиентов:\n\nВ данный момент раздел находится в разработке.", reply_markup=kb)
+
+@dp.message(Command(commands=['social']))
+async def cmd_social(message: Message):
+    """Handle /social command"""
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ В меню", callback_data="back_main")]
+    ])
+    await message.answer("📱 Социальные сети:\n\nВ данный момент раздел находится в разработке.", reply_markup=kb)
+
+
 @dp.callback_query()
 async def handle_callback(query: CallbackQuery):
+    # Fix for UnboundLocalError: explicitly declare imported classes as global
+    global InlineKeyboardMarkup, InlineKeyboardButton
+    
     data_raw = query.data or ""
     data = data_raw.lower()
     username = (query.from_user.username or "").lstrip("@").lower()
@@ -488,6 +737,64 @@ async def handle_callback(query: CallbackQuery):
     if data == "services":
         kb = build_services_keyboard()
         await query.message.answer("💼 Услуги и цены: выберите категорию", reply_markup=kb)
+        return
+    
+    if data == "promotions":
+        # Cleanup expired promotions first
+        cleanup_expired_promotions()
+        
+        # Get active promotions
+        promotions = get_active_promotions()
+        is_admin = is_admin_view_enabled(username, query.from_user.id)
+        
+        if not promotions:
+            # No active promotions
+            if is_admin:
+                kb = build_add_promotion_keyboard()
+                await query.message.answer(
+                    "🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊\n\n"
+                    "Как администратор, вы можете добавить новую акцию:", 
+                    reply_markup=kb
+                )
+            else:
+                await query.message.answer("🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊")
+            return
+        
+        # Show first promotion
+        await show_promotion(query.message, 0, promotions, is_admin)
+        return
+
+    # Handle promotion navigation
+    if data.startswith("promo_prev:") or data.startswith("promo_next:"):
+        # Cleanup expired promotions first
+        cleanup_expired_promotions()
+        
+        # Get active promotions
+        promotions = get_active_promotions()
+        is_admin = is_admin_view_enabled(username, query.from_user.id)
+        
+        if not promotions:
+            await query.message.answer("🎉 На текущий момент нет действующих акций.")
+            return
+        
+        # Extract current index
+        try:
+            current_idx = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            current_idx = 0
+        
+        # Calculate new index
+        if data.startswith("promo_prev:"):
+            new_idx = (current_idx - 1) % len(promotions)
+        else:  # promo_next
+            new_idx = (current_idx + 1) % len(promotions)
+        
+        # Update the promotion message with new index
+        try:
+            await update_promotion_message(query, new_idx, promotions, is_admin)
+        except Exception as e:
+            # Fallback to first promotion if something goes wrong
+            await update_promotion_message(query, 0, promotions, is_admin)
         return
     
     if data == "wedding_packages":
@@ -968,8 +1275,11 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
                 fid = photos[next_idx]
                 from aiogram.types import InputMediaPhoto
                 try:
-                    await query.message.edit_media(InputMediaPhoto(media=fid, caption='🗑 Удалено. Следующее.'))
-                    await query.message.edit_reply_markup(reply_markup=build_category_delete_viewer_keyboard(slug, next_idx))
+                    # Use edit_media with media and reply_markup in one call
+                    await query.message.edit_media(
+                        InputMediaPhoto(media=fid, caption='🗑 Удалено. Следующее.'),
+                        reply_markup=build_category_delete_viewer_keyboard(slug, next_idx)
+                    )
                 except Exception:
                     await bot.send_photo(chat_id=query.message.chat.id, photo=fid, caption='🗑 Удалено. Следующее.', reply_markup=build_category_delete_viewer_keyboard(slug, next_idx))
                 await query.message.answer('Фото удалено. Можно восстановить последнее.', reply_markup=build_undo_photo_delete_kb(slug))
@@ -1715,14 +2025,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
 
     # (confirm_delete / delete_menu branches removed — immediate deletion used)
 
-    if data == 'admin_change_text':
-        if username not in ADMIN_USERNAMES:
-            await query.message.answer("🚫 У вас нет доступа к администрированию.")
-            return
-        ADMIN_PENDING_ACTIONS[username] = 'change_text'
-        save_pending_actions(ADMIN_PENDING_ACTIONS)
-        await query.message.answer('Отправьте новый текст приветствия в сообщении (plain text).')
-        return
+
 
     if data == 'admin_change_image':
         if username not in ADMIN_USERNAMES:
@@ -1732,6 +2035,281 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         save_pending_actions(ADMIN_PENDING_ACTIONS)
         await query.message.answer('Пришлите изображение, которое хотите установить как приветственное (я сохраню file_id).')
         return
+
+    if data == 'admin_broadcast':
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        ADMIN_PENDING_ACTIONS[username] = 'broadcast_text'
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        await query.message.answer('📢 Отправьте текст сообщения для рассылки всем пользователям бота.')
+        return
+
+    if data == 'broadcast_confirm':
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        # Get stored broadcast text
+        broadcast_text = get_setting(f'broadcast_temp_{username}', '')
+        if not broadcast_text:
+            await query.message.answer('❌ Текст для рассылки не найден. Попробуйте снова.')
+            return
+        
+        await perform_broadcast(broadcast_text, query.message)
+        # Clear temporary text
+        set_setting(f'broadcast_temp_{username}', '')
+        return
+
+    if data == 'broadcast_cancel':
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        # Clear temporary text
+        set_setting(f'broadcast_temp_{username}', '')
+        await query.message.answer('❌ Рассылка отменена.')
+        return
+
+    if data == 'add_promotion':
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'add_promotion_title'}
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        await query.message.answer('📝 Введите название акции:')
+        return
+
+    # Promotion "no image" handler
+    if data == 'promo_no_image':
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        
+        # Get current pending action data
+        pending = ADMIN_PENDING_ACTIONS.get(username, {})
+        if pending.get('action') != 'add_promotion_image':
+            await query.message.answer("❌ Ошибка: неожиданное состояние. Начните заново.")
+            return
+        
+        payload = pending.get('payload', {})
+        title = payload.get('title')
+        description = payload.get('description')
+        
+        # Skip image, go to date selection
+        ADMIN_PENDING_ACTIONS[username] = {
+            'action': 'add_promotion_start_date', 
+            'payload': {'title': title, 'description': description, 'image_file_id': None}
+        }
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        
+        from datetime import datetime
+        await query.message.edit_text('✅ Акция будет создана без изображения\n\n📅 Выберите дату начала акции:', 
+                             reply_markup=build_promotion_date_keyboard(datetime.now().year, datetime.now().month, 'promo_start_date'))
+        return
+
+    # Promotion date selection handlers
+    if data.startswith('promo_start_date:'):
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        
+        # Extract selected date
+        selected_date = data.split(':', 1)[1]  # Format: 2024-01-15
+        
+        # Get current pending action data
+        pending = ADMIN_PENDING_ACTIONS.get(username, {})
+        if pending.get('action') != 'add_promotion_start_date':
+            await query.message.answer("❌ Ошибка: неожиданное состояние. Начните заново.")
+            return
+        
+        payload = pending.get('payload', {})
+        payload['start_date'] = selected_date
+        
+        # Ask for end date
+        ADMIN_PENDING_ACTIONS[username] = {
+            'action': 'add_promotion_end_date',
+            'payload': payload
+        }
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        
+        from datetime import datetime
+        await query.message.edit_text(f'✅ Дата начала выбрана: {selected_date}\n\n📅 Теперь выберите дату окончания акции:', 
+                                      reply_markup=build_promotion_date_keyboard(datetime.now().year, datetime.now().month, 'promo_end_date'))
+        return
+
+    if data.startswith('promo_end_date:'):
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        
+        # Extract selected date
+        selected_date = data.split(':', 1)[1]  # Format: 2024-01-15
+        
+        # Get current pending action data
+        pending = ADMIN_PENDING_ACTIONS.get(username, {})
+        if pending.get('action') != 'add_promotion_end_date':
+            await query.message.answer("❌ Ошибка: неожиданное состояние. Начните заново.")
+            return
+        
+        payload = pending.get('payload', {})
+        start_date = payload.get('start_date')
+        
+        # Validate that end date is after start date
+        from datetime import datetime
+        try:
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(selected_date, '%Y-%m-%d')
+            
+            if end_dt <= start_dt:
+                await query.message.answer("❌ Дата окончания должна быть позже даты начала. Выберите другую дату.")
+                return
+        except ValueError:
+            await query.message.answer("❌ Ошибка формата даты. Попробуйте снова.")
+            return
+        
+        # Create promotion
+        title = payload.get('title')
+        description = payload.get('description')
+        image_file_id = payload.get('image_file_id')
+        
+        try:
+            add_promotion(title, description, start_date, selected_date, str(query.from_user.id), image_file_id)
+            ADMIN_PENDING_ACTIONS.pop(username, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
+            
+            await query.message.edit_text(f'✅ Акция "{title}" успешно создана!\n\n📅 Период: {start_date} - {selected_date}')
+        except Exception as e:
+            await query.message.answer(f"❌ Ошибка при создании акции: {str(e)}")
+        return
+
+    # Calendar navigation handlers
+    if data.startswith('promo_start_date_cal:') or data.startswith('promo_end_date_cal:'):
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        
+        # Extract action and date
+        action_type = 'promo_start_date' if data.startswith('promo_start_date_cal:') else 'promo_end_date'
+        date_part = data.split(':', 1)[1]  # Format: 2024-02
+        
+        try:
+            year, month = map(int, date_part.split('-'))
+            from datetime import datetime
+            
+            if action_type == 'promo_start_date':
+                text = '📅 Выберите дату начала акции:'
+            else:
+                text = '📅 Выберите дату окончания акции:'
+            
+            await query.message.edit_text(text, 
+                                          reply_markup=build_promotion_date_keyboard(year, month, action_type))
+        except ValueError:
+            await query.message.answer("❌ Ошибка формата даты.")
+        return
+
+    # Handle promotion deletion
+    if data.startswith('delete_promotion:'):
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        
+        try:
+            promotion_idx = int(data.split(':', 1)[1])
+        except (ValueError, IndexError):
+            await query.message.answer("❌ Ошибка: неверный индекс акции.")
+            return
+        
+        # Get active promotions to find the actual promotion ID
+        promotions = get_active_promotions()
+        if not promotions or promotion_idx >= len(promotions):
+            await query.message.answer("❌ Акция не найдена.")
+            return
+        
+        promotion = promotions[promotion_idx]
+        promo_id, title, description, image_file_id, start_date, end_date, created_by = promotion
+        
+        # Create confirmation keyboard
+        confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_promotion:{promo_id}"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="promotions")
+            ]
+        ])
+        
+        await query.message.edit_text(
+            f"🗑️ **Подтверждение удаления**\n\n"
+            f"Вы действительно хотите удалить акцию?\n\n"
+            f"**{title}**\n\n"
+            f"⚠️ Это действие нельзя отменить!",
+            reply_markup=confirm_kb,
+            parse_mode="Markdown"
+        )
+        return
+
+    # Handle promotion deletion confirmation
+    if data.startswith('confirm_delete_promotion:'):
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        
+        try:
+            promo_id = int(data.split(':', 1)[1])
+        except (ValueError, IndexError):
+            await query.message.answer("❌ Ошибка: неверный ID акции.")
+            return
+        
+        try:
+            # Delete the promotion from database
+            delete_promotion(promo_id)
+            
+            # Get updated promotions list
+            promotions = get_active_promotions()
+            
+            if not promotions:
+                # No more promotions left
+                if is_admin_view_enabled(username, query.from_user.id):
+                    kb = build_add_promotion_keyboard()
+                    await query.message.edit_text(
+                        "✅ Акция успешно удалена!\n\n"
+                        "🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊\n\n"
+                        "Как администратор, вы можете добавить новую акцию:", 
+                        reply_markup=kb
+                    )
+                else:
+                    await query.message.edit_text(
+                        "✅ Акция успешно удалена!\n\n"
+                        "🎉 На текущий момент нет действующих акций. Мы работаем над этим! 😊"
+                    )
+            else:
+                # Show first remaining promotion
+                await query.message.edit_text("✅ Акция успешно удалена!")
+                await update_promotion_message(query, 0, promotions, is_admin_view_enabled(username, query.from_user.id))
+        except Exception as e:
+            await query.message.edit_text(f"❌ Ошибка при удалении акции: {str(e)}")
+        return
+
+
+async def perform_broadcast(text: str, message: Message):
+    """Send broadcast message to all users."""
+    users = get_all_users()
+    sent = 0
+    failed = 0
+    
+    await message.answer(f"📤 Начинаю рассылку для {len(users)} пользователей...")
+    
+    for user_id, username, first_name, last_name in users:
+        try:
+            await bot.send_message(user_id, text)
+            sent += 1
+        except Exception as e:
+            failed += 1
+            logging.warning(f"Failed to send broadcast to user {user_id}: {e}")
+    
+    await message.answer(
+        f"✅ Рассылка завершена!\n\n"
+        f"📨 Отправлено: {sent}\n"
+        f"❌ Не доставлено: {failed}\n"
+        f"📊 Всего пользователей: {len(users)}"
+    )
 
 
 @dp.message()
@@ -1745,13 +2323,29 @@ async def handle_admin_pending(message: Message):
     if not action:
         return
 
-    if action == 'change_text':
+
+
+    if action == 'broadcast_text':
         if not message.text:
-            await message.answer('Ожидаю текст. Пожалуйста, пришлите новый текст приветствия.')
+            await message.answer('Ожидаю текст для рассылки. Пожалуйста, отправьте текст сообщения.')
             return
-        set_setting('welcome_text', message.text)
+        # Store broadcast text temporarily
+        set_setting(f'broadcast_temp_{username}', message.text)
         ADMIN_PENDING_ACTIONS.pop(username, None)
-        await message.answer('✅ Текст приветствия обновлён.')
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        
+        users = get_all_users()
+        user_count = len(users)
+        
+        preview_text = message.text[:200] + ("..." if len(message.text) > 200 else "")
+        
+        await message.answer(
+            f"📢 Готов к рассылке!\n\n"
+            f"📝 Текст сообщения:\n{preview_text}\n\n"
+            f"👥 Количество получателей: {user_count}\n\n"
+            f"Подтвердите отправку:",
+            reply_markup=broadcast_confirm_keyboard()
+        )
         return
     # menu add/edit & category/photo flows
     if action and isinstance(action, dict):
@@ -2016,6 +2610,78 @@ async def handle_admin_pending(message: Message):
             save_pending_actions(ADMIN_PENDING_ACTIONS)
             await message.answer(f'✅ callback для "{menu[idx].get("text")}" обновлён -> "{new_cb}"')
             return
+    
+    # Promotion management cases
+    if a == 'add_promotion_title':
+        if not message.text:
+            await message.answer('❌ Ожидаю текст заголовка акции. Попробуйте снова.')
+            return
+        title = message.text.strip()
+        if not title:
+            await message.answer('❌ Заголовок не может быть пустым. Попробуйте снова.')
+            return
+        
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'add_promotion_description', 'payload': {'title': title}}
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        await message.answer(f'✅ Заголовок сохранён: "{title}"\n\n📝 Теперь пришлите описание акции:')
+        return
+    
+    if a == 'add_promotion_description':
+        if not message.text:
+            await message.answer('❌ Ожидаю текст описания акции. Попробуйте снова.')
+            return
+        description = message.text.strip()
+        if not description:
+            await message.answer('❌ Описание не может быть пустым. Попробуйте снова.')
+            return
+        
+        title = payload.get('title')
+        ADMIN_PENDING_ACTIONS[username] = {
+            'action': 'add_promotion_image', 
+            'payload': {'title': title, 'description': description}
+        }
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        await message.answer(f'✅ Описание сохранено\n\n🖼️ Теперь пришлите изображение для акции:', reply_markup=build_promotion_image_keyboard())
+        return
+    
+    if a == 'add_promotion_image':
+        title = payload.get('title')
+        description = payload.get('description')
+        image_file_id = None
+        
+        # Handle image
+        photo = None
+        if message.photo:
+            photo = message.photo[-1]
+        elif message.document and message.document.mime_type and message.document.mime_type.startswith('image'):
+            image_file_id = message.document.file_id
+        
+        if photo:
+            image_file_id = photo.file_id
+        
+        if not image_file_id:
+            await message.answer('❌ Ожидаю изображение. Используйте кнопку "Без фото" если хотите создать акцию без изображения.')
+            return
+        
+        ADMIN_PENDING_ACTIONS[username] = {
+            'action': 'add_promotion_start_date', 
+            'payload': {'title': title, 'description': description, 'image_file_id': image_file_id}
+        }
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        from datetime import datetime
+        await message.answer('✅ Изображение сохранено\n\n📅 Выберите дату начала акции:', reply_markup=build_promotion_date_keyboard(datetime.now().year, datetime.now().month, 'promo_start_date'))
+        return
+    
+    if a == 'add_promotion_start_date':
+        # This will be handled by callback, not text message
+        await message.answer('📅 Используйте кнопки календаря для выбора даты начала акции.')
+        return
+    
+    if a == 'add_promotion_end_date':
+        # This will be handled by callback, not text message
+        await message.answer('📅 Используйте кнопки календаря для выбора даты окончания акции.')
+        return
+    
     elif action == 'change_image':
         photo = None
         if message.photo:
