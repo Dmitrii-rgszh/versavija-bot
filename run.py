@@ -4,6 +4,7 @@ from config import bot, dp
 # В контейнере запускается run.py напрямую, поэтому надо явно импортировать handlers,
 # чтобы декораторы зарегистрировали обработчики (/start и т.д.).
 import handlers  # noqa: F401  (side-effect import)
+import welcome_messages  # импорт модуля приветственных сообщений
 from aiogram.types import BotCommand
 from db import init_db  # ensure DB (including new bookings table) is initialized before polling
 
@@ -29,6 +30,9 @@ async def main():
             logging.info('Database initialized (tables ensured)')
         except Exception:
             logging.exception('Failed to initialize database')
+
+        # Настройка приветственных сообщений
+        welcome_messages.setup_welcome_handlers()
 
         try:
             await bot.delete_webhook(drop_pending_updates=True)

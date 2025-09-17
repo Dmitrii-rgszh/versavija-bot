@@ -37,6 +37,8 @@ from keyboards import (
     build_services_keyboard,
     build_wedding_packages_nav_keyboard,
     broadcast_confirm_keyboard,
+    build_broadcast_image_keyboard,
+    build_broadcast_confirm_keyboard,
     build_promotions_keyboard,
     build_add_promotion_keyboard,
     build_promotion_date_keyboard,
@@ -1914,7 +1916,7 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         if username not in ADMIN_USERNAMES:
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        ADMIN_PENDING_ACTIONS[username] = 'broadcast_text'
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'broadcast_text'}
         save_pending_actions(ADMIN_PENDING_ACTIONS)
         await query.message.answer('📢 Отправьте текст сообщения для рассылки всем пользователям бота.')
         return
@@ -1923,24 +1925,51 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         if username not in ADMIN_USERNAMES:
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        # Get stored broadcast text
-        broadcast_text = get_setting(f'broadcast_temp_{username}', '')
+        # Get stored broadcast data
+        broadcast_text = get_setting(f'broadcast_temp_text_{username}', '')
+        broadcast_image = get_setting(f'broadcast_temp_image_{username}', '')
         if not broadcast_text:
             await query.message.answer('❌ Текст для рассылки не найден. Попробуйте снова.')
             return
         
-        await perform_broadcast(broadcast_text, query.message)
-        # Clear temporary text
-        set_setting(f'broadcast_temp_{username}', '')
+        await perform_broadcast(broadcast_text, broadcast_image if broadcast_image else None, query.message)
+        # Clear temporary data
+        set_setting(f'broadcast_temp_text_{username}', '')
+        set_setting(f'broadcast_temp_image_{username}', '')
         return
 
     if data == 'broadcast_cancel':
         if username not in ADMIN_USERNAMES:
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        # Clear temporary text
-        set_setting(f'broadcast_temp_{username}', '')
+        # Clear temporary data
+        set_setting(f'broadcast_temp_text_{username}', '')
+        set_setting(f'broadcast_temp_image_{username}', '')
         await query.message.answer('❌ Рассылка отменена.')
+        return
+
+    if data == 'broadcast_no_image':
+        if username not in ADMIN_USERNAMES:
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        # Skip image and go to confirmation
+        broadcast_text = get_setting(f'broadcast_temp_text_{username}', '')
+        if not broadcast_text:
+            await query.message.answer('❌ Текст для рассылки не найден. Попробуйте снова.')
+            return
+        
+        users = get_all_users()
+        user_count = len(users)
+        preview_text = broadcast_text[:200] + ("..." if len(broadcast_text) > 200 else "")
+        
+        await query.message.answer(
+            f"📢 Готов к рассылке!\n\n"
+            f"📝 Текст сообщения:\n{preview_text}\n\n"
+            f"🖼️ Изображение: Без изображения\n\n"
+            f"👥 Количество получателей: {user_count}\n\n"
+            f"Подтвердите отправку:",
+            reply_markup=build_broadcast_confirm_keyboard()
+        )
         return
 
     if data == 'add_promotion':
@@ -2162,17 +2191,21 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         return
 
 
-async def perform_broadcast(text: str, message: Message):
+async def perform_broadcast(text: str, image_file_id: str = None, message: Message = None):
     """Send broadcast message to all users."""
     users = get_all_users()
     sent = 0
     failed = 0
     
-    await message.answer(f"📤 Начинаю рассылку для {len(users)} пользователей...")
+    broadcast_type = "с изображением" if image_file_id else "только текст"
+    await message.answer(f"📤 Начинаю рассылку ({broadcast_type}) для {len(users)} пользователей...")
     
     for user_id, username, first_name, last_name in users:
         try:
-            await bot.send_message(user_id, text)
+            if image_file_id:
+                await bot.send_photo(user_id, image_file_id, caption=text)
+            else:
+                await bot.send_message(user_id, text)
             sent += 1
         except Exception as e:
             failed += 1
@@ -2199,33 +2232,84 @@ async def handle_admin_pending(message: Message):
 
 
 
-    if action == 'broadcast_text':
+    # Handle different action types
+    if action and isinstance(action, dict):
+        a = action.get('action')
+        payload = action.get('payload', {})
+    elif action and isinstance(action, str):
+        # Handle old string format (for backward compatibility)
+        a = action
+        payload = {}
+    else:
+        return
+
+    if a == 'broadcast_text':
         if not message.text:
-            await message.answer('Ожидаю текст для рассылки. Пожалуйста, отправьте текст сообщения.')
+            await message.answer('❌ Ожидаю текст для рассылки. Пожалуйста, отправьте текст сообщения.')
             return
+        
+        text = message.text.strip()
+        if not text:
+            await message.answer('❌ Текст не может быть пустым. Попробуйте снова.')
+            return
+        
         # Store broadcast text temporarily
-        set_setting(f'broadcast_temp_{username}', message.text)
+        set_setting(f'broadcast_temp_text_{username}', text)
+        
+        # Move to image step
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'broadcast_image', 'payload': {'text': text}}
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        
+        await message.answer(
+            f'✅ Текст сохранён: "{text[:100]}{"..." if len(text) > 100 else ""}"\n\n'
+            f'🖼️ Теперь пришлите изображение для рассылки или выберите "Без фото":',
+            reply_markup=build_broadcast_image_keyboard()
+        )
+        return
+
+    if a == 'broadcast_image':
+        text = payload.get('text', '')
+        image_file_id = None
+        
+        # Handle image
+        photo = None
+        if message.photo:
+            photo = message.photo[-1]
+        elif message.document and message.document.mime_type and message.document.mime_type.startswith('image'):
+            image_file_id = message.document.file_id
+        
+        if photo:
+            image_file_id = photo.file_id
+        
+        if not image_file_id:
+            await message.answer('❌ Ожидаю изображение. Используйте кнопку "Без фото" если хотите сделать рассылку без изображения.')
+            return
+        
+        # Store image temporarily
+        set_setting(f'broadcast_temp_image_{username}', image_file_id)
+        
+        # Clear pending action and show confirmation
         ADMIN_PENDING_ACTIONS.pop(username, None)
         save_pending_actions(ADMIN_PENDING_ACTIONS)
         
         users = get_all_users()
         user_count = len(users)
-        
-        preview_text = message.text[:200] + ("..." if len(message.text) > 200 else "")
+        preview_text = text[:200] + ("..." if len(text) > 200 else "")
         
         await message.answer(
             f"📢 Готов к рассылке!\n\n"
             f"📝 Текст сообщения:\n{preview_text}\n\n"
-            f"👥 Количество получателей: {user_count}\n\n"
+            f"�️ Изображение: Прикреплено\n\n"
+            f"�👥 Количество получателей: {user_count}\n\n"
             f"Подтвердите отправку:",
-            reply_markup=broadcast_confirm_keyboard()
+            reply_markup=build_broadcast_confirm_keyboard()
         )
         return
-    # menu add/edit & category/photo flows
-    if action and isinstance(action, dict):
-        a = action.get('action')
-        payload = action.get('payload', {})
-        if a == 'new_category':
+
+    # Process other admin actions
+    a = action.get('action')
+    payload = action.get('payload', {})
+    if a == 'new_category':
             if not message.text:
                 await message.answer('Ожидаю название категории. Попробуйте снова.')
                 return
@@ -2254,7 +2338,7 @@ async def handle_admin_pending(message: Message):
             kb = build_portfolio_keyboard(cats, is_admin=True)
             await message.answer('Обновлённый список категорий:', reply_markup=kb)
             return
-        if a == 'rename_category':
+    if a == 'rename_category':
             if not message.text:
                 await message.answer('Ожидаю новое название. Попробуйте снова.')
                 return
@@ -2282,7 +2366,7 @@ async def handle_admin_pending(message: Message):
             await message.answer('Обновлённый список категорий:', reply_markup=kb)
             return
         
-        if a == 'edit_social_text':
+    if a == 'edit_social_text':
             if not message.text:
                 await message.answer('Ожидаю текст для соцсетей. Попробуйте снова.')
                 return
@@ -2298,7 +2382,7 @@ async def handle_admin_pending(message: Message):
             await message.answer('✅ Текст соцсетей обновлён.')
             return
         
-        if a == 'add_review':
+    if a == 'add_review':
             if message.photo:
                 raw = get_setting('reviews_photos', '[]')
                 try:

@@ -319,6 +319,22 @@ def build_promotion_image_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def build_broadcast_image_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for broadcast image selection."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚫 Без фото", callback_data="broadcast_no_image")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel")]
+    ])
+
+
+def build_broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for broadcast confirmation."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Отправить", callback_data="broadcast_confirm")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel")]
+    ])
+
+
 def build_promotion_date_keyboard(year: int, month: int, action_prefix: str) -> InlineKeyboardMarkup:
     """Build calendar keyboard for promotion date selection."""
     import calendar
