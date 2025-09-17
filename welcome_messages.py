@@ -8,6 +8,8 @@ import random
 import asyncio
 import logging
 from aiogram.types import Message
+from aiogram.filters import Command
+from aiogram import F
 from config import bot, dp
 
 # ID целевой группы для приветственных сообщений
@@ -49,28 +51,46 @@ async def send_welcome_message(chat_id: int, new_members: list):
         # Ждем 30 секунд перед отправкой приветствия
         await asyncio.sleep(30)
         
-        # Выбираем случайное приветственное сообщение
-        welcome_text = random.choice(WELCOME_MESSAGES)
+        # Отправляем персональное приветствие каждому новому участнику
+        for member in new_members:
+            # Выбираем случайное приветственное сообщение
+            welcome_text = random.choice(WELCOME_MESSAGES)
+            
+            # Формируем обращение к пользователю
+            if member.username:
+                user_mention = f"@{member.username}"
+            else:
+                # Если нет username, используем имя с ссылкой на профиль
+                user_mention = f"[{member.full_name}](tg://user?id={member.id})"
+            
+            # Добавляем обращение к пользователю в начало сообщения
+            personalized_message = f"{user_mention}, {welcome_text}"
+            
+            # Отправляем сообщение в группу
+            await bot.send_message(
+                chat_id=chat_id,
+                text=personalized_message,
+                parse_mode="Markdown"
+            )
+            
+            # Небольшая задержка между сообщениями, если участников несколько
+            if len(new_members) > 1:
+                await asyncio.sleep(2)
         
-        # Отправляем сообщение в группу
-        await bot.send_message(
-            chat_id=chat_id,
-            text=welcome_text,
-            parse_mode="Markdown"
-        )
-        
-        logging.info(f"Отправлено приветственное сообщение в группу {chat_id} для {len(new_members)} новых участников")
+        logging.info(f"Отправлено {len(new_members)} приветственных сообщений в группу {chat_id}")
         
     except Exception as e:
         logging.error(f"Ошибка при отправке приветственного сообщения: {e}")
 
 
-@dp.message()
+@dp.message(F.new_chat_members)
 async def handle_new_members(message: Message):
     """
     Обрабатывает событие присоединения новых участников к группе.
     Запускает отправку приветственного сообщения с задержкой.
     """
+    logging.info(f"📨 СОБЫТИЕ: new_chat_members в чате {message.chat.id} ({message.chat.type})")
+    
     # Проверяем, что сообщение из целевой группы и содержит новых участников
     if (message.chat.id == TARGET_GROUP_ID and 
         message.new_chat_members and 
@@ -90,6 +110,55 @@ async def handle_new_members(message: Message):
             )
         else:
             logging.info("Новые участники - боты, приветствие не отправляется")
+    else:
+        if message.chat.id != TARGET_GROUP_ID:
+            logging.info(f"Событие из другого чата: {message.chat.id} (целевой: {TARGET_GROUP_ID})")
+
+
+# Отладочный обработчик для диагностики
+@dp.message()
+async def debug_all_messages(message: Message):
+    """Отладочный обработчик - логирует сообщения из целевого чата"""
+    if message.chat.id == TARGET_GROUP_ID:
+        logging.info(f"📨 ОТЛАДКА: Сообщение в целевом чате {message.chat.id}")
+        logging.info(f"   Тип чата: {message.chat.type}")
+        logging.info(f"   Название: {message.chat.title}")
+        logging.info(f"   Новые участники: {message.new_chat_members}")
+        logging.info(f"   Покинувшие: {message.left_chat_member}")
+        logging.info(f"   Текст: {message.text and message.text[:50]}")
+
+
+# Альтернативная команда приветствия для каналов
+@dp.message(Command(commands=['welcome']))
+async def manual_welcome_command(message: Message):
+    """
+    Команда для ручного запроса приветствия.
+    Работает в любых чатах, включая каналы.
+    """
+    try:
+        # Выбираем случайное приветственное сообщение
+        welcome_text = random.choice(WELCOME_MESSAGES)
+        
+        # Формируем персональное обращение
+        user = message.from_user
+        if user.username:
+            user_mention = f"@{user.username}"
+        else:
+            user_mention = f"[{user.full_name}](tg://user?id={user.id})"
+        
+        personalized_message = f"{user_mention}, {welcome_text}"
+        
+        # Отправляем приветствие
+        await message.reply(
+            text=personalized_message,
+            parse_mode="Markdown"
+        )
+        
+        logging.info(f"Отправлено приветствие по команде пользователю {user.full_name} в чате {message.chat.id}")
+        
+    except Exception as e:
+        logging.error(f"Ошибка команды /welcome: {e}")
+        await message.reply("Произошла ошибка при отправке приветствия 😔")
 
 
 def setup_welcome_handlers():
@@ -99,6 +168,17 @@ def setup_welcome_handlers():
     """
     logging.info(f"Настроены обработчики приветственных сообщений для группы ID: {TARGET_GROUP_ID}")
     logging.info(f"Загружено {len(WELCOME_MESSAGES)} приветственных сообщений")
+    logging.info("Доступные функции:")
+    logging.info("  • Автоматическое приветствие в группах/супергруппах")
+    logging.info("  • Команда /welcome для ручного приветствия")
+    logging.info("  • Отладочное логирование событий")
+    
+    # Информируем о типе целевого чата
+    if str(TARGET_GROUP_ID).startswith("-100"):
+        logging.info("  ⚠️ ID указывает на супергруппу/канал - убедитесь что это именно ГРУППА!")
+    logging.info(f"  📊 Для отладки проверяйте логи с префиксом '📨 ОТЛАДКА'")
+    
+    return True
 
 
 if __name__ == "__main__":

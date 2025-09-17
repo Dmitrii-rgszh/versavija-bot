@@ -473,6 +473,34 @@ async def send_welcome(message: Message):
     # End of send_welcome
 
 
+@dp.message(Command(commands=['get_chat_id']))  
+async def get_chat_id_command(message: Message):
+    """Показывает ID текущего чата - полезно для настройки новой группы"""
+    try:
+        chat_info = await message.bot.get_chat(message.chat.id)
+        
+        result = f"""🆔 **Информация о чате:**
+
+**ID:** `{message.chat.id}`
+**Тип:** {chat_info.type}
+**Название:** {chat_info.title or 'Без названия'}
+**Username:** @{chat_info.username or 'Нет username'}
+
+💡 **Для welcome messages используйте:**
+```python
+TARGET_GROUP_ID = {message.chat.id}
+```
+
+🔧 **Статус чата:**
+• {'✅ Подходит для приветствий' if chat_info.type in ['group', 'supergroup'] else '❌ Каналы не поддерживают приветствия'}
+"""
+        
+        await message.reply(result, parse_mode="Markdown")
+        
+    except Exception as e:
+        await message.reply(f"❌ Ошибка получения информации о чате: {e}")
+
+
 async def update_promotion_message(query, promotion_idx: int, promotions: list, is_admin: bool = False):
     """Update existing promotion message with navigation."""
     if not promotions:

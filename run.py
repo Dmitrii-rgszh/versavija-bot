@@ -31,8 +31,28 @@ async def main():
         except Exception:
             logging.exception('Failed to initialize database')
 
-        # Настройка приветственных сообщений
+        # Настройка стандартной системы приветствий (для групп/супергрупп)
         welcome_messages.setup_welcome_handlers()
+        
+        # Настройка системы отслеживания подписчиков канала через Client API
+        try:
+            from simple_tracker import setup_simple_tracking
+            await setup_simple_tracking()
+            logging.info('Simple tracking system initialized with full automation')
+        except Exception as e:
+            # Если упрощенный трекер не работает, используем автоматический мониторинг
+            try:
+                from auto_monitor import setup_auto_monitoring
+                await setup_auto_monitoring()
+                logging.info('Automatic monitoring system initialized as fallback')
+            except Exception as e2:
+                # Если и автоматический мониторинг не работает, используем демо версию
+                try:
+                    from demo_tracker import setup_demo_tracking
+                    await setup_demo_tracking()
+                    logging.info('Demo tracking system initialized as final fallback')
+                except Exception as e3:
+                    logging.info(f'No tracking system available: {e3}')
 
         try:
             await bot.delete_webhook(drop_pending_updates=True)
@@ -42,7 +62,11 @@ async def main():
 
         await _set_bot_commands()
 
+        # Запускаем Bot API polling
+        logging.info("🤖 Запускаем Bot API polling...")
         await dp.start_polling(bot)
+        
+        # await dp.start_polling(bot)
     finally:
         await bot.session.close()
 
