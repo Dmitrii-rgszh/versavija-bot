@@ -13,6 +13,7 @@ __pycache__/
 # Virtual environment
 venv/
 env/
+.venv/
 
 # OS files
 .DS_Store
@@ -29,5 +30,14 @@ Thumbs.db
 *.tmp
 *.temp
 
-# Media uploads (optional - можно убрать если нужно сохранить примеры)
-media/portfolio/*/
+# Sessions & runtime artifacts
+*.session
+*.session-journal
+
+# Caches
+*.cache/
+.cache/
+
+# Keep curated message JSONs in repo
+!media/birthday_messages.json
+!media/welcome_messages.json
