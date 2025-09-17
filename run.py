@@ -5,6 +5,7 @@ from config import bot, dp
 # чтобы декораторы зарегистрировали обработчики (/start и т.д.).
 import handlers  # noqa: F401  (side-effect import)
 import welcome_messages  # импорт модуля приветственных сообщений
+from birthday_scheduler import setup_birthday_scheduler
 from aiogram.types import BotCommand
 from db import init_db  # ensure DB (including new bookings table) is initialized before polling
 
@@ -13,7 +14,6 @@ async def _set_bot_commands():
     try:
         cmds = [
             BotCommand(command='start', description='Начать / Главное меню'),
-            BotCommand(command='adminmode', description='Переключить режим администратора'),
             BotCommand(command='help', description='Справка'),
         ]
         await bot.set_my_commands(cmds)
@@ -33,6 +33,11 @@ async def main():
 
         # Настройка стандартной системы приветствий (для групп/супергрупп)
         welcome_messages.setup_welcome_handlers()
+        # Планировщик поздравлений с ДР и DM-промо
+        try:
+            await setup_birthday_scheduler()
+        except Exception as e:
+            logging.warning('Не удалось запустить планировщик ДР: %s', e)
         
         # Настройка системы отслеживания подписчиков канала через Client API
         try:

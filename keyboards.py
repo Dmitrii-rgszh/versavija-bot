@@ -247,7 +247,7 @@ def build_reviews_delete_keyboard(reviews: list) -> InlineKeyboardMarkup:
 def build_services_keyboard() -> InlineKeyboardMarkup:
     """Build keyboard for services menu."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="� Свадебная", callback_data="wedding_packages")],
+        [InlineKeyboardButton(text="💍 Свадебная", callback_data="wedding_packages")],
         [InlineKeyboardButton(text="💋 Lingerie (будуарная)", callback_data="lingerie_service")],
         [InlineKeyboardButton(text="📸 Репортажная", callback_data="reportage_service")],
         [InlineKeyboardButton(text="👤 Индивидуальная", callback_data="individual_service")],

@@ -70,7 +70,7 @@ DEFAULT_PORTFOLIO_CATEGORIES = [
     {"text": "Love Story", "slug": "love_story"},
     {"text": "Индивидуальная", "slug": "personal"},
     {"text": "Репортажная (банкеты, мероприятия)", "slug": "reportage"},
-    {"text": "Свадебная", "slug": "wedding"},
+    {"text": "💍 Свадебная", "slug": "wedding"},
     {"text": "Lingerie (будуарная)", "slug": "lingerie"},
     {"text": "Детская (школы/садики)", "slug": "children"},
     {"text": "Мама с ребёнком", "slug": "mom_child"},

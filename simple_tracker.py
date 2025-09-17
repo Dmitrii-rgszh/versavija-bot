@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Set
 from aiogram.types import Message
 from aiogram.filters import Command
-from config import dp, bot, ADMIN_IDS
+from config import dp, bot
 
 # Конфигурация
 TARGET_CHANNEL_ID = -1002553563891
@@ -55,13 +55,81 @@ WELCOME_MESSAGES = [
 known_subscribers: Set[int] = set()
 pending_welcomes: Dict[int, dict] = {}
 client = None
+_tl_client = None
+DEBUG_BIRTHDAY_LOGS = False
+
+async def _telethon_fetch_birthdate(user_id: int, username: str | None) -> str | None:
+    """Пробуем получить дату рождения через Telethon (если Pyrogram не вернул)."""
+    global _tl_client
+    try:
+        from telethon import TelegramClient, functions
+    except Exception:
+        logging.info("[TL] Telethon не установлен или недоступен")
+        return None
+
+    try:
+        if _tl_client is None:
+            tl_session = f"{SESSION_NAME}_tl"
+            _tl_client = TelegramClient(tl_session, int(API_ID), API_HASH)
+            await _tl_client.connect()
+        if not await _tl_client.is_user_authorized():
+            logging.info("[TL] Сессия не авторизована. Выполните: python telethon_login.py")
+            return None
+
+        # Получаем entity пользователя
+        entity = None
+        try:
+            if username:
+                entity = await _tl_client.get_entity(username)
+        except Exception:
+            entity = None
+        if entity is None:
+            try:
+                entity = await _tl_client.get_entity(user_id)
+            except Exception:
+                entity = None
+        if entity is None:
+            logging.info("[TL] Не удалось получить entity пользователя")
+            return None
+
+        full = await _tl_client(functions.users.GetFullUserRequest(id=entity))
+        full_user = getattr(full, 'full_user', None) or getattr(full, 'user_full', None) or full
+        bd = None
+        for attr in ('birthday', 'birthdate', 'birth_date'):
+            if hasattr(full_user, attr):
+                bd = getattr(full_user, attr)
+                break
+        if bd is None:
+            logging.info("[TL] Атрибут даты рождения отсутствует в объекте")
+            return None
+        try:
+            day = getattr(bd, 'day', None)
+            month = getattr(bd, 'month', None)
+            year = getattr(bd, 'year', None)
+            if isinstance(bd, dict):
+                day = day or bd.get('day')
+                month = month or bd.get('month')
+                year = year or bd.get('year')
+            if day and month:
+                s = f"{int(month):02d}-{int(day):02d}"
+                if year:
+                    s = f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+                logging.info("[TL] Дата рождения получена: %s", s)
+                return s
+        except Exception:
+            return None
+        return None
+    except Exception as e:
+        logging.info("[TL] Ошибка Telethon: %s", e)
+        return None
 
 def create_subscribers_table():
-    """Создает таблицу подписчиков в БД"""
+    """Создает/мигрирует таблицу подписчиков в БД"""
     try:
         conn = sqlite3.connect('data.db')
         cursor = conn.cursor()
-        
+
+        # Базовое создание, если таблицы нет
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS subscribers (
                 user_id INTEGER PRIMARY KEY,
@@ -70,11 +138,23 @@ def create_subscribers_table():
                 join_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
+        # Миграции: добавляем недостающие колонки (last_name, birthdate)
+        try:
+            cursor.execute("PRAGMA table_info(subscribers)")
+            cols = {row[1] for row in cursor.fetchall()}
+            if 'last_name' not in cols:
+                cursor.execute('ALTER TABLE subscribers ADD COLUMN last_name TEXT')
+            if 'birthdate' not in cols:
+                cursor.execute('ALTER TABLE subscribers ADD COLUMN birthdate TEXT')
+        except Exception as me:
+            # Логируем, но не валим инициализацию
+            logging.warning(f"Не удалось выполнить миграцию таблицы subscribers: {me}")
+
         conn.commit()
         conn.close()
         logging.info("✅ Таблица подписчиков создана/обновлена")
-        
+
     except Exception as e:
         logging.error(f"❌ Ошибка создания таблицы: {e}")
 
@@ -114,11 +194,80 @@ async def get_channel_subscribers_simple():
         async for member in client.get_chat_members(channel_identifier):
             user = member.user
             if not user.is_bot:  # Пропускаем ботов
+                # Пытаемся получить дату рождения (если есть в полном профиле)
+                birthdate_str = None
+
+                # Попробуем получить полный профиль пользователя через RAW API (если поле публично)
+                try:
+                    from pyrogram.raw.functions.users import GetFullUser
+                    peer = await client.resolve_peer(user.id)
+                    full = await client.invoke(GetFullUser(id=peer))
+                    full_user = getattr(full, 'full_user', None) or getattr(full, 'user_full', None) or full
+
+                    # Ищем атрибут с датой рождения
+                    bd = None
+                    for attr in ('birthday', 'birthdate', 'birth_date'):
+                        bd = getattr(full_user, attr, None)
+                        if bd is not None:
+                            break
+                    if bd is not None:
+                        try:
+                            day = getattr(bd, 'day', None)
+                            month = getattr(bd, 'month', None)
+                            year = getattr(bd, 'year', None)
+                            if isinstance(bd, dict):
+                                day = day or bd.get('day')
+                                month = month or bd.get('month')
+                                year = year or bd.get('year')
+                            if day and month:
+                                birthdate_str = f"{int(month):02d}-{int(day):02d}"
+                                if year:
+                                    birthdate_str = f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+                        except Exception:
+                            birthdate_str = None
+                    # Точечная отладка для проверки полей дня рождения (по умолчанию выключена)
+                    try:
+                        if DEBUG_BIRTHDAY_LOGS and not birthdate_str:
+                            attrs = [a for a in dir(full_user) if not a.startswith('_')]
+                            logging.info("[DBG] full_user attrs: %s", attrs)
+                            maybe_bd = None
+                            for a in ('birthday','birthdate','birth_date'):
+                                if hasattr(full_user, a):
+                                    maybe_bd = getattr(full_user, a)
+                                    break
+                            logging.info("[DBG] birthday object: %r", maybe_bd)
+                            if maybe_bd is not None:
+                                logging.info("[DBG] birthday fields: day=%s month=%s year=%s", getattr(maybe_bd,'day',None), getattr(maybe_bd,'month',None), getattr(maybe_bd,'year',None))
+                    except Exception:
+                        pass
+                except Exception:
+                    # Молча игнорируем, если библиотека/поле недоступны или приватность запрещает
+                    pass
+
+                # Доп. попытка получить last_name через get_users (более полный объект)
+                last_name = getattr(user, 'last_name', None)
+                try:
+                    if not last_name:
+                        detailed = await client.get_users(user.id)
+                        ln = getattr(detailed, 'last_name', None)
+                        if ln:
+                            last_name = ln
+                except Exception:
+                    pass
+
+                # Если Pyrogram не дал дату рождения — пробуем Telethon (если авторизован)
+                if not birthdate_str:
+                    try:
+                        birthdate_str = await _telethon_fetch_birthdate(user.id, (user.username or ''))
+                    except Exception:
+                        pass
+
                 user_data = {
                     'user_id': user.id,
                     'username': user.username,
                     'first_name': user.first_name,
-                    'last_name': user.last_name,
+                    'last_name': last_name,
+                    'birthdate': birthdate_str,
                     'phone': getattr(user, 'phone_number', None),
                     'is_bot': user.is_bot,
                     'is_verified': getattr(user, 'is_verified', False),
@@ -144,20 +293,22 @@ def save_subscriber(subscriber):
     try:
         conn = sqlite3.connect('data.db')
         cursor = conn.cursor()
-        
+
         cursor.execute('''
             INSERT OR REPLACE INTO subscribers 
-            (user_id, username, first_name)
-            VALUES (?, ?, ?)
+            (user_id, username, first_name, last_name, birthdate)
+            VALUES (?, ?, ?, ?, ?)
         ''', (
-            subscriber['user_id'],
-            subscriber['username'],
-            subscriber['first_name']
+            subscriber.get('user_id'),
+            subscriber.get('username'),
+            subscriber.get('first_name'),
+            subscriber.get('last_name'),
+            subscriber.get('birthdate'),
         ))
-        
+
         conn.commit()
         conn.close()
-        
+
     except Exception as e:
         logging.error(f"❌ Ошибка сохранения подписчика: {e}")
 
@@ -320,27 +471,9 @@ async def setup_simple_tracking():
     asyncio.create_task(subscriber_monitoring_task())
     
     logging.info("✅ Система отслеживания подписчиков готова!")
-    logging.info("📱 Команды: /sync_subscribers, /subscriber_stats")
+    
 
-# Команды для управления
-@dp.message(Command(commands=['sync_subscribers']))
-async def sync_subscribers_command(message: Message):
-    """Принудительная синхронизация подписчиков"""
-    if message.from_user.id not in ADMIN_IDS:
-        await message.reply("❌ Команда доступна только администраторам")
-        return
-    
-    await message.reply("🔄 Запускаю синхронизацию подписчиков...")
-    await sync_subscribers()
-    
-    # Показываем статистику
-    conn = sqlite3.connect('data.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM subscribers')
-    total = cursor.fetchone()[0]
-    conn.close()
-    
-    await message.reply(f"✅ Синхронизация завершена!\n👥 Всего подписчиков: {total}\n⏳ Ожидают приветствия: {len(pending_welcomes)}")
+## Admin command '/sync_subscribers' removed by request
 
 if __name__ == "__main__":
     print("🎯 ПРОСТАЯ СИСТЕМА ОТСЛЕЖИВАНИЯ ПОДПИСЧИКОВ")

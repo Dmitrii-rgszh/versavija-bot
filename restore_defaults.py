@@ -8,7 +8,7 @@ from db import get_menu, save_menu
 DEFAULTS = [
     {"text": "Портфолио", "callback": "portfolio"},
     {"text": "Услуги и цены", "callback": "services"},
-    {"text": "Онлайн-запись", "callback": "booking"},
+    {"text": "Запись", "callback": "booking"},
     {"text": "Отзывы", "callback": "reviews"},
     {"text": "Соцсети", "callback": "social"},
 ]

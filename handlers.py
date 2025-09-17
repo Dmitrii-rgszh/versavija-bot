@@ -72,7 +72,7 @@ MENU_MESSAGES = {
 DEFAULT_MENU = [
     {"text": "📸 Портфолио", "callback": "portfolio"},
     {"text": "💰 Услуги и цены", "callback": "services"},
-    {"text": "📅 Онлайн-запись", "callback": "booking"},
+    {"text": "📅 Запись", "callback": "booking"},
     {"text": "🎉 Акции", "callback": "promotions"},
     {"text": "⭐ Отзывы", "callback": "reviews"},
     {"text": "📱 Соцсети", "callback": "social"},
@@ -84,7 +84,7 @@ DEFAULT_PORTFOLIO_CATEGORIES = [
     {"text": "💕 Love Story", "slug": "love_story"},
     {"text": "👤 Индивидуальная", "slug": "personal"},
     {"text": "🎉 Репортажная (банкеты, мероприятия)", "slug": "reportage"},
-    {"text": "� Свадебная", "slug": "wedding"},
+    {"text": "💍 Свадебная", "slug": "wedding"},
     {"text": "💋 Lingerie (будуарная)", "slug": "lingerie"},
     {"text": "👶 Детская (школы/садики)", "slug": "children"},
     {"text": "👩‍👶 Мама с ребёнком", "slug": "mom_child"},
@@ -291,11 +291,10 @@ async def _set_static_commands():
             BotCommand(command='start', description='Главное меню'),
             BotCommand(command='portfolio', description='📸 Портфолио'),
             BotCommand(command='services', description='💰 Услуги и цены'),
-            BotCommand(command='booking', description='📅 Онлайн-запись'),
+            BotCommand(command='booking', description='📅 Запись'),
             BotCommand(command='promotions', description='🎉 Акции'),
             BotCommand(command='reviews', description='⭐ Отзывы'),
             BotCommand(command='social', description='📱 Соцсети'),
-            BotCommand(command='adminmode', description='Админ режим'),
         ])
     except Exception as e:
         logging.warning('Failed to set static commands: %s', e)
@@ -377,40 +376,7 @@ def is_admin_view_enabled(username: str, user_id: int) -> bool:
     return val == 'on'
 
 
-@dp.message(Command(commands=['adminmode']))
-async def toggle_admin_mode(message: Message):
-    username = (message.from_user.username or '').lstrip('@').lower()
-    user_id = message.from_user.id
-    if not _user_is_admin(username, user_id):
-        return await message.answer('🚫 Нет доступа.')
-    # ensure this admin is remembered for future notifications
-    _add_known_admin(user_id)
-    key = f'admin_mode_{user_id}'
-    cur = get_setting(key, 'on') or 'on'
-    new_val = 'off' if cur == 'on' else 'on'
-    set_setting(key, new_val)
-    state_text = 'ВЫКЛЮЧЕН' if new_val == 'off' else 'ВКЛЮЧЕН'
-    # покажем уведомление о смене режима
-    await message.answer(f'🔁 Режим администратора теперь: {state_text}.')
-    # после переключения всегда показываем приветственный экран как «перезагрузку» интерфейса
-    # (импортируем локально, чтобы не создавать циклическую зависимость при импорте вверху)
-    try:
-        # повторно используем логику /start
-        await send_welcome(message)
-    except Exception:
-        # fallback: хотя бы обновить главное меню
-        menu = get_menu(DEFAULT_MENU)
-        kb = build_main_keyboard_from_menu(menu, is_admin_view_enabled(username, user_id))
-        await message.answer(MENU_MESSAGES["main"], reply_markup=kb)
-
-
-@dp.message(Command(commands=['refreshcommands','synccommands','sync']))
-async def refresh_commands(message: Message):
-    username = (message.from_user.username or '').lstrip('@').lower()
-    if not _user_is_admin(username, message.from_user.id):
-        return
-    await _set_static_commands()
-    await message.answer('✅ Команды обновлены! Список:\n/start - Главное меню\n/portfolio - Портфолио\n/services - Услуги и цены\n/booking - Онлайн-запись\n/promotions - Акции\n/reviews - Отзывы\n/social - Соцсети\n/adminmode - Админ режим')
+## Admin commands removed by request: /adminmode and refresh/sync commands
 
 
 @dp.message(Command(commands=['start']))
@@ -672,7 +638,7 @@ async def cmd_booking(message: Message):
         [InlineKeyboardButton(text='📅 Записаться', callback_data='booking')],
         [InlineKeyboardButton(text='⬅️ В меню', callback_data='back_main')]
     ])
-    await message.answer("📅 Онлайн-запись на фотосессию", reply_markup=kb)
+    await message.answer("📅 Запись на фотосессию", reply_markup=kb)
 
 @dp.message(Command(commands=['promotions']))
 async def cmd_promotions(message: Message):
