@@ -24,6 +24,12 @@ async def _set_bot_commands():
 
 async def main():
     try:
+        # Reduce noise from third-party libraries while keeping our INFO logs
+        try:
+            logging.getLogger('telethon').setLevel(logging.WARNING)
+            logging.getLogger('aiohttp').setLevel(logging.WARNING)
+        except Exception:
+            pass
         # Initialize / migrate database (adds new tables if they don't exist)
         try:
             init_db()
