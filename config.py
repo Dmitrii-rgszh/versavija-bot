@@ -35,3 +35,13 @@ for part in _env_ids.split(','):
 # Shared bot and dispatcher
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
+
+# Mapping defaults (Yandex Maps deep-linking)
+# Samara city center by default: (lat, lon)
+DEFAULT_CITY_NAME = os.getenv('DEFAULT_CITY_NAME', 'Самара')
+# Note: store as (lat, lon) tuple; Yandex ll param expects lon,lat order
+DEFAULT_CITY_CENTER = (
+    float(os.getenv('DEFAULT_CITY_LAT', '53.195878')),
+    float(os.getenv('DEFAULT_CITY_LON', '50.100202')),
+)
+MAP_ZOOM_DEFAULT = int(os.getenv('MAP_ZOOM_DEFAULT', '16'))

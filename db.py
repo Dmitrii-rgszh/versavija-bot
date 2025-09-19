@@ -9,8 +9,19 @@ _default_db = Path(__file__).parent / 'data.db'
 DB_PATH = Path(os.getenv('DB_PATH', _default_db))
 
 
+def _connect():
+    con = sqlite3.connect(DB_PATH, timeout=15)
+    try:
+        con.execute('PRAGMA journal_mode=WAL')
+        con.execute('PRAGMA synchronous=NORMAL')
+        con.execute('PRAGMA busy_timeout=15000')
+    except Exception:
+        pass
+    return con
+
+
 def init_db() -> None:
-    con = sqlite3.connect(DB_PATH)
+    con = _connect()
     cur = con.cursor()
     cur.execute('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)')
     # Add category column for bookings (migration-safe)
@@ -22,7 +33,12 @@ def init_db() -> None:
         start_ts TEXT,
         status TEXT,
         category TEXT,
-        reminder_sent INTEGER DEFAULT 0
+        reminder_sent INTEGER DEFAULT 0,
+        loc_lat REAL,
+        loc_lon REAL,
+        loc_text TEXT,
+        loc_source TEXT,
+        loc_addr TEXT
     )''')
     # Migration: if old table (no category column), try to add
     try:
@@ -30,6 +46,16 @@ def init_db() -> None:
         cols = {r[1] for r in cur.fetchall()}
         if 'category' not in cols:
             cur.execute('ALTER TABLE bookings ADD COLUMN category TEXT')
+        if 'loc_lat' not in cols:
+            cur.execute('ALTER TABLE bookings ADD COLUMN loc_lat REAL')
+        if 'loc_lon' not in cols:
+            cur.execute('ALTER TABLE bookings ADD COLUMN loc_lon REAL')
+        if 'loc_text' not in cols:
+            cur.execute('ALTER TABLE bookings ADD COLUMN loc_text TEXT')
+        if 'loc_source' not in cols:
+            cur.execute('ALTER TABLE bookings ADD COLUMN loc_source TEXT')
+        if 'loc_addr' not in cols:
+            cur.execute('ALTER TABLE bookings ADD COLUMN loc_addr TEXT')
     except Exception:
         pass
     cur.execute('CREATE INDEX IF NOT EXISTS idx_bookings_start ON bookings(start_ts)')
@@ -124,7 +150,7 @@ def save_pending_actions(pending: dict) -> None:
 
 
 def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
-    con = sqlite3.connect(DB_PATH)
+    con = _connect()
     cur = con.cursor()
     cur.execute('SELECT value FROM settings WHERE key=?', (key,))
     row = cur.fetchone()
@@ -133,7 +159,7 @@ def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
 
 
 def set_setting(key: str, value: str) -> None:
-    con = sqlite3.connect(DB_PATH)
+    con = _connect()
     cur = con.cursor()
     cur.execute('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, value))
     con.commit()
@@ -141,11 +167,17 @@ def set_setting(key: str, value: str) -> None:
 
 
 # ----- Booking helpers -----
-def add_booking(user_id: int, username: str, chat_id: int, start_ts: str, category: str) -> int:
-    con = sqlite3.connect(DB_PATH)
+def add_booking(user_id: int, username: str, chat_id: int, start_ts: str, category: str,
+                loc_lat: float | None = None, loc_lon: float | None = None,
+                loc_text: str | None = None, loc_source: str | None = None,
+                loc_addr: str | None = None) -> int:
+    con = _connect()
     cur = con.cursor()
-    cur.execute('INSERT INTO bookings(user_id, username, chat_id, start_ts, status, category, reminder_sent) VALUES(?,?,?,?,?,?,0)',
-                (user_id, username, chat_id, start_ts, 'active', category))
+    cur.execute('''INSERT INTO bookings(user_id, username, chat_id, start_ts, status, category, reminder_sent,
+                                        loc_lat, loc_lon, loc_text, loc_source, loc_addr)
+                   VALUES(?,?,?,?,?,?,0, ?,?,?,?,?)''',
+                (user_id, username, chat_id, start_ts, 'active', category,
+                 loc_lat, loc_lon, loc_text, loc_source, loc_addr))
     bid = cur.lastrowid
     con.commit()
     con.close()
@@ -153,18 +185,18 @@ def add_booking(user_id: int, username: str, chat_id: int, start_ts: str, catego
 
 
 def get_bookings_between(start_iso: str, end_iso: str) -> list[dict]:
-    con = sqlite3.connect(DB_PATH)
+    con = _connect()
     cur = con.cursor()
-    cur.execute('SELECT id,user_id,username,chat_id,start_ts,status,category,reminder_sent FROM bookings WHERE start_ts>=? AND start_ts<? AND status IN ("active","confirmed") ORDER BY start_ts', (start_iso, end_iso))
+    cur.execute('SELECT id,user_id,username,chat_id,start_ts,status,category,reminder_sent,loc_lat,loc_lon,loc_text,loc_source,loc_addr FROM bookings WHERE start_ts>=? AND start_ts<? AND status IN ("active","confirmed") ORDER BY start_ts', (start_iso, end_iso))
     rows = cur.fetchall()
     con.close()
     return [
-        {'id': r[0], 'user_id': r[1], 'username': r[2], 'chat_id': r[3], 'start_ts': r[4], 'status': r[5], 'category': r[6], 'reminder_sent': r[7]} for r in rows
+        {'id': r[0], 'user_id': r[1], 'username': r[2], 'chat_id': r[3], 'start_ts': r[4], 'status': r[5], 'category': r[6], 'reminder_sent': r[7], 'loc_lat': r[8], 'loc_lon': r[9], 'loc_text': r[10], 'loc_source': r[11], 'loc_addr': r[12]} for r in rows
     ]
 
 
 def is_slot_taken(start_ts: str) -> bool:
-    con = sqlite3.connect(DB_PATH)
+    con = _connect()
     cur = con.cursor()
     cur.execute('SELECT 1 FROM bookings WHERE start_ts=? AND status IN ("active","confirmed") LIMIT 1', (start_ts,))
     taken = cur.fetchone() is not None
@@ -173,39 +205,52 @@ def is_slot_taken(start_ts: str) -> bool:
 
 
 def get_booking(bid: int) -> Optional[Dict]:
-    con = sqlite3.connect(DB_PATH)
+    con = _connect()
     cur = con.cursor()
-    cur.execute('SELECT id,user_id,username,chat_id,start_ts,status,category,reminder_sent FROM bookings WHERE id=?', (bid,))
+    cur.execute('SELECT id,user_id,username,chat_id,start_ts,status,category,reminder_sent,loc_lat,loc_lon,loc_text,loc_source,loc_addr FROM bookings WHERE id=?', (bid,))
     r = cur.fetchone()
     con.close()
     if not r:
         return None
-    return {'id': r[0], 'user_id': r[1], 'username': r[2], 'chat_id': r[3], 'start_ts': r[4], 'status': r[5], 'category': r[6], 'reminder_sent': r[7]}
+    return {'id': r[0], 'user_id': r[1], 'username': r[2], 'chat_id': r[3], 'start_ts': r[4], 'status': r[5], 'category': r[6], 'reminder_sent': r[7], 'loc_lat': r[8], 'loc_lon': r[9], 'loc_text': r[10], 'loc_source': r[11], 'loc_addr': r[12]}
 
 
 def get_active_booking_for_user(user_id: int) -> Optional[Dict]:
     """Return the latest active booking (status active/confirmed) for a user, if any."""
-    con = sqlite3.connect(DB_PATH)
+    con = _connect()
     cur = con.cursor()
-    cur.execute('''SELECT id,user_id,username,chat_id,start_ts,status,category,reminder_sent FROM bookings
+    cur.execute('''SELECT id,user_id,username,chat_id,start_ts,status,category,reminder_sent,loc_lat,loc_lon,loc_text,loc_source,loc_addr FROM bookings
                    WHERE user_id=? AND status IN ("active","confirmed") ORDER BY start_ts DESC LIMIT 1''', (user_id,))
     r = cur.fetchone()
     con.close()
     if not r:
         return None
-    return {'id': r[0], 'user_id': r[1], 'username': r[2], 'chat_id': r[3], 'start_ts': r[4], 'status': r[5], 'category': r[6], 'reminder_sent': r[7]}
+    return {'id': r[0], 'user_id': r[1], 'username': r[2], 'chat_id': r[3], 'start_ts': r[4], 'status': r[5], 'category': r[6], 'reminder_sent': r[7], 'loc_lat': r[8], 'loc_lon': r[9], 'loc_text': r[10], 'loc_source': r[11], 'loc_addr': r[12]}
 
 
 def update_booking_time_and_category(bid: int, new_start_ts: str, new_category: str):
-    con = sqlite3.connect(DB_PATH)
+    con = _connect()
     cur = con.cursor()
     cur.execute('UPDATE bookings SET start_ts=?, category=?, reminder_sent=0 WHERE id=?', (new_start_ts, new_category, bid))
     con.commit()
     con.close()
 
+def update_booking_time_category_location(bid: int, new_start_ts: str, new_category: str,
+                                          loc_lat: float | None, loc_lon: float | None,
+                                          loc_text: str | None, loc_source: str | None,
+                                          loc_addr: str | None):
+    con = _connect()
+    cur = con.cursor()
+    cur.execute('''UPDATE bookings SET start_ts=?, category=?, reminder_sent=0,
+                                      loc_lat=?, loc_lon=?, loc_text=?, loc_source=?, loc_addr=?
+                   WHERE id=?''',
+                (new_start_ts, new_category, loc_lat, loc_lon, loc_text, loc_source, loc_addr, bid))
+    con.commit()
+    con.close()
+
 
 def update_booking_status(bid: int, status: str):
-    con = sqlite3.connect(DB_PATH)
+    con = _connect()
     cur = con.cursor()
     cur.execute('UPDATE bookings SET status=? WHERE id=?', (status, bid))
     con.commit()
@@ -213,7 +258,7 @@ def update_booking_status(bid: int, status: str):
 
 
 def mark_booking_reminder_sent(bid: int):
-    con = sqlite3.connect(DB_PATH)
+    con = _connect()
     cur = con.cursor()
     cur.execute('UPDATE bookings SET reminder_sent=1 WHERE id=?', (bid,))
     con.commit()

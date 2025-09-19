@@ -11,6 +11,8 @@ from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardBut
 from aiogram.filters import Command
 
 from config import bot, dp, ADMIN_IDS
+from config import DEFAULT_CITY_NAME, DEFAULT_CITY_CENTER, MAP_ZOOM_DEFAULT
+from utils import yandex_link_for_city, parse_yandex_coords, resolve_yandex_url, fetch_yandex_coords_from_html, parse_plain_coords, reverse_geocode_nominatim, parse_yandex_address_from_url, fetch_yandex_address_from_html
 from db import get_setting, set_setting, get_menu, save_menu, get_pending_actions, save_pending_actions
 from db import add_booking, is_slot_taken, get_bookings_between, get_booking, update_booking_status, clear_all_bookings
 from db import get_active_booking_for_user, update_booking_time_and_category, add_user, get_all_users
@@ -437,6 +439,127 @@ async def send_welcome(message: Message):
 
 
     # End of send_welcome
+
+
+@dp.message()
+async def catch_yandex_link(message: Message):
+    try:
+        logging.info("[LOC] Incoming message type=%s from user=%s", message.content_type, message.from_user.username)
+    except Exception:
+        pass
+    # First, accept native Telegram location
+    if getattr(message, 'location', None):
+        loc = message.location
+        pend_raw = get_setting(f'pending_booking_{message.from_user.id}', None)
+        if not pend_raw:
+            return
+        try:
+            pend = json.loads(pend_raw)
+        except Exception:
+            return
+        if not pend.get('await_loc'):
+            return
+        lat = float(loc.latitude)
+        lon = float(loc.longitude)
+        pend['loc_lat'] = lat
+        pend['loc_lon'] = lon
+        pend['loc_text'] = f'Telegram geo: {lat:.6f},{lon:.6f}'
+        pend['loc_source'] = 'telegram_location'
+        pend['await_loc'] = False
+        set_setting(f'pending_booking_{message.from_user.id}', json.dumps(pend, ensure_ascii=False))
+        try:
+            date_iso = pend.get('date'); hour = pend.get('hour'); slug = pend.get('slug')
+            from datetime import datetime, timezone
+            BOOK_TZ = timezone.utc
+            start_dt = datetime.fromisoformat(date_iso).replace(tzinfo=BOOK_TZ,hour=int(hour),minute=0,second=0,microsecond=0)
+            cat = next((c for c in get_portfolio_categories() if c.get('slug')==slug), {'text': slug})
+            human = start_dt.strftime('%d.%m.%Y %H:%M')
+            addr_line = ''
+            if pend.get('loc_addr'):
+                addr_line = f"\nАдрес: {pend.get('loc_addr')}"
+            await message.answer(
+                f'📍 Локация принята{addr_line}\n\nВы выбрали {human}\nКатегория: {cat.get("text")}\nПодтвердить?',
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text='✅ Подтвердить', callback_data=f'bk_cf:{date_iso}:{hour}')],
+                    [InlineKeyboardButton(text='↩️ Изменить', callback_data='bk_back_date')],
+                    [InlineKeyboardButton(text='❌ Отмена', callback_data='bk_cancel')]
+                ])
+            )
+        except Exception:
+            await message.answer('📍 Локация принята. Нажмите Подтвердить на предыдущем шаге.')
+        return
+
+    text = (message.text or '').strip()
+    if not text:
+        return
+    # check pending booking state and if awaiting location
+    pend_raw = get_setting(f'pending_booking_{message.from_user.id}', None)
+    if not pend_raw:
+        return
+    try:
+        pend = json.loads(pend_raw)
+    except Exception:
+        return
+    if not pend.get('await_loc'):
+        return
+    # Try parse directly; if short link (no coords), resolve redirects first
+    coords = parse_yandex_coords(text)
+    # peek address directly from URL
+    url_addr = parse_yandex_address_from_url(text) if ('yandex.' in text or 'ya.ru' in text) else None
+    if not coords and ('yandex.' in text or 'ya.ru' in text):
+        try:
+            resolved = await resolve_yandex_url(text)
+            coords = parse_yandex_coords(resolved)
+            if not url_addr:
+                url_addr = parse_yandex_address_from_url(resolved)
+            if not coords:
+                # Try HTML scraping for coordinates
+                coords = await fetch_yandex_coords_from_html(resolved)
+            if not url_addr:
+                # Try HTML scraping for address
+                url_addr = await fetch_yandex_address_from_html(resolved)
+        except Exception:
+            coords = None
+    # Try plain 'lat, lon' text
+    if not coords:
+        coords = parse_plain_coords(text)
+    if not coords:
+        # If it looks like a Yandex link but we couldn't parse, hint user
+        if 'yandex.' in text or 'ya.ru' in text:
+            try:
+                await message.answer('⚠️ Не удалось распознать координаты. Варианты:\n• Откройте ссылку → Поделиться → Скопировать ссылку (чтобы были ll= или pt=)\n• Отправьте геолокацию через «📎»\n• Пришлите "lat, lon", например: 53.252560, 50.249664\n• Или нажмите «Пропустить локацию».')
+            except Exception:
+                pass
+        return
+    lat, lon = coords
+    pend['loc_lat'] = lat
+    pend['loc_lon'] = lon
+    pend['loc_text'] = f'Яндекс.Карты: {lat:.6f},{lon:.6f}'
+    if url_addr:
+        pend['loc_addr'] = url_addr
+    pend['loc_source'] = text
+    pend['await_loc'] = False
+    set_setting(f'pending_booking_{message.from_user.id}', json.dumps(pend, ensure_ascii=False))
+    try:
+        date_iso = pend.get('date'); hour = pend.get('hour'); slug = pend.get('slug')
+        from datetime import datetime, timezone
+        BOOK_TZ = timezone.utc
+        start_dt = datetime.fromisoformat(date_iso).replace(tzinfo=BOOK_TZ,hour=int(hour),minute=0,second=0,microsecond=0)
+        cat = next((c for c in get_portfolio_categories() if c.get('slug')==slug), {'text': slug})
+        human = start_dt.strftime('%d.%m.%Y %H:%M')
+        addr_line = ''
+        if pend.get('loc_addr'):
+            addr_line = f"\nАдрес: {pend.get('loc_addr')}"
+        await message.answer(
+            f'📍 Локация принята{addr_line}\n\nВы выбрали {human}\nКатегория: {cat.get("text")}\nПодтвердить?',
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='✅ Подтвердить', callback_data=f'bk_cf:{date_iso}:{hour}')],
+                [InlineKeyboardButton(text='↩️ Изменить', callback_data='bk_back_date')],
+                [InlineKeyboardButton(text='❌ Отмена', callback_data='bk_cancel')]
+            ])
+        )
+    except Exception:
+        await message.answer('📍 Локация принята. Нажмите Подтвердить на предыдущем шаге.')
 
 
 @dp.message(Command(commands=['get_chat_id']))  
@@ -1602,6 +1725,16 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             [InlineKeyboardButton(text='↩️ Изменить', callback_data='bk_back_date')],
             [InlineKeyboardButton(text='❌ Отмена', callback_data='bk_cancel')]
         ])
+    def build_booking_loc_kb(date_iso: str, hour: int, slug: str):
+        city_lat, city_lon = DEFAULT_CITY_CENTER
+        url = yandex_link_for_city(city_lat, city_lon, DEFAULT_CITY_NAME, MAP_ZOOM_DEFAULT)
+        rows = [
+            [InlineKeyboardButton(text='🗺️ Открыть Яндекс.Карты', url=url)],
+            [InlineKeyboardButton(text='⏭️ Пропустить локацию', callback_data=f'bk_loc_skip:{date_iso}:{hour}:{slug}')],
+            [InlineKeyboardButton(text='⬅️ Назад', callback_data='bk_back_date')],
+            [InlineKeyboardButton(text='❌ Отмена', callback_data='bk_cancel')]
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     # Booking flow callbacks
     if data == 'booking':
@@ -1672,10 +1805,47 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         if is_slot_taken(start_dt.isoformat()) or is_slot_taken(buffer_dt.isoformat()) or is_slot_taken(prev_dt.isoformat()):
             await query.answer('Слот занят')
             return
-        set_setting(f'pending_booking_{query.from_user.id}', json.dumps({'date': date_iso, 'hour': hour, 'slug': slug}, ensure_ascii=False))
+        set_setting(
+            f'pending_booking_{query.from_user.id}',
+            json.dumps({'date': date_iso, 'hour': hour, 'slug': slug, 'await_loc': True}, ensure_ascii=False)
+        )
         cat = next((c for c in get_portfolio_categories() if c.get('slug')==slug), {'text': slug})
         human = start_dt.strftime('%d.%m.%Y %H:%M')
-        await _send_booking_step(query, f'Вы выбрали {human}\nКатегория: {cat.get("text")}\nПодтвердить?', build_booking_confirm_kb(date_iso, hour))
+        text = (
+            f'Вы выбрали {human}\nКатегория: {cat.get("text")}\n\n'
+            '📍 Локация съёмки:\n'
+            f'Откройте Яндекс.Карты по кнопке ниже (по умолчанию — {DEFAULT_CITY_NAME}),\n'
+            'выберите место → Поделиться → Скопировать ссылку и пришлите её сюда одним сообщением.'
+        )
+        await _send_booking_step(query, text, build_booking_loc_kb(date_iso, hour, slug))
+        return
+    if data.startswith('bk_loc_skip:'):
+        try:
+            _, date_iso, hour, slug = data.split(':', 3)
+            hour = int(hour)
+        except Exception:
+            return
+        # mark pending as no longer awaiting location
+        pend_raw = get_setting(f'pending_booking_{query.from_user.id}', None)
+        pend = {}
+        if pend_raw:
+            try:
+                pend = json.loads(pend_raw)
+            except Exception:
+                pend = {}
+        pend['await_loc'] = False
+        set_setting(f'pending_booking_{query.from_user.id}', json.dumps(pend, ensure_ascii=False))
+        start_dt = datetime.fromisoformat(date_iso).replace(tzinfo=BOOK_TZ,hour=hour,minute=0,second=0,microsecond=0)
+        cat = next((c for c in get_portfolio_categories() if c.get('slug')==slug), {'text': slug})
+        human = start_dt.strftime('%d.%m.%Y %H:%M')
+        # Include address in confirmation if available in pending
+        addr_line = ''
+        try:
+            if pend.get('loc_addr'):
+                addr_line = f"\nАдрес: {pend.get('loc_addr')}"
+        except Exception:
+            addr_line = ''
+        await _send_booking_step(query, f'Вы выбрали {human}\nКатегория: {cat.get("text")}\nПодтвердить?{addr_line}', build_booking_confirm_kb(date_iso, hour))
         return
     if data.startswith('bk_cf:'):
         _, date_iso, hour = data.split(':',2)
@@ -1688,9 +1858,11 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             return
         pending_raw = get_setting(f'pending_booking_{query.from_user.id}', None)
         slug = None
+        pend = {}
         if pending_raw:
             try:
-                slug = json.loads(pending_raw).get('slug')
+                pend = json.loads(pending_raw)
+                slug = pend.get('slug')
             except Exception:
                 slug = None
         if not slug:
@@ -1710,7 +1882,14 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
             old_bk = get_booking(res_info['bid'])
             if old_bk and old_bk['user_id']==query.from_user.id and old_bk['status'] in ('active','confirmed'):
                 old_start = old_bk['start_ts']
-                update_booking_time_and_category(res_info['bid'], start_dt.isoformat(), cat.get('text'))
+                if pend.get('loc_lat') is not None and pend.get('loc_lon') is not None:
+                    from db import update_booking_time_category_location
+                    update_booking_time_category_location(
+                        res_info['bid'], start_dt.isoformat(), cat.get('text'),
+                        pend.get('loc_lat'), pend.get('loc_lon'), pend.get('loc_text'), pend.get('loc_source'), pend.get('loc_addr')
+                    )
+                else:
+                    update_booking_time_and_category(res_info['bid'], start_dt.isoformat(), cat.get('text'))
                 await _send_booking_step(query, f'🔁 Запись обновлена: {start_dt.strftime("%d.%m.%Y %H:%M")}')
                 from datetime import datetime as _dt
                 old_h = _dt.fromisoformat(old_start).strftime('%H:%M %d.%m.%Y')
@@ -1723,15 +1902,53 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
                 _add_booking_status_user(query.from_user.id)
             else:
                 await query.message.answer('Исходная запись не найдена, создана новая.')
-                bid = add_booking(query.from_user.id, username, query.message.chat.id, start_dt.isoformat(), cat.get('text'))
+                bid = add_booking(query.from_user.id, username, query.message.chat.id, start_dt.isoformat(), cat.get('text'), pend.get('loc_lat'), pend.get('loc_lon'), pend.get('loc_text'), pend.get('loc_source'), pend.get('loc_addr'))
                 _add_booking_status_user(query.from_user.id)
             set_setting(f'resched_{query.from_user.id}', '')
         else:
-            bid = add_booking(query.from_user.id, username, query.message.chat.id, start_dt.isoformat(), cat.get('text'))
-            await _send_booking_step(query, f'✅ Запись создана: {start_dt.strftime("%d.%m.%Y %H:%M")} (с резервом до {buffer_dt.strftime("%H:%M")}). Напоминание за 24 часа.')
+            bid = add_booking(
+                query.from_user.id,
+                username,
+                query.message.chat.id,
+                start_dt.isoformat(),
+                cat.get('text'),
+                pend.get('loc_lat'),
+                pend.get('loc_lon'),
+                pend.get('loc_text'),
+                pend.get('loc_source'),
+                pend.get('loc_addr')
+            )
+            await _send_booking_step(
+                query,
+                f'✅ Запись создана: {start_dt.strftime("%d.%m.%Y %H:%M")} (с резервом до {buffer_dt.strftime("%H:%M")}). Напоминание за 24 часа.'
+            )
+            # Prepare optional Yandex Maps link and direct address (no VPN bias) for admins if coordinates/address provided
+            loc_suffix = ''
+            try:
+                lat = pend.get('loc_lat')
+                lon = pend.get('loc_lon')
+                if lat is not None and lon is not None:
+                    url = f'https://yandex.ru/maps/?ll={float(lon):.6f},{float(lat):.6f}&z=16&pt={float(lon):.6f},{float(lat):.6f}'
+                    direct_addr = pend.get('loc_addr')
+                    if not direct_addr and isinstance(pend.get('loc_source'), str) and ('yandex.' in pend['loc_source'] or 'ya.ru' in pend['loc_source']):
+                        # As a last resort try to extract address from the resolved page
+                        try:
+                            resolved = await resolve_yandex_url(pend['loc_source'])
+                            direct_addr = parse_yandex_address_from_url(resolved) or await fetch_yandex_address_from_html(resolved)
+                        except Exception:
+                            direct_addr = None
+                    if direct_addr:
+                        loc_suffix = f"\n📍 Локация: {url}\n🏷️ Адрес: {direct_addr}"
+                    else:
+                        loc_suffix = f"\n📍 Локация: {url}"
+            except Exception:
+                loc_suffix = ''
             for aid in _get_all_admin_ids():
                 try:
-                    await bot.send_message(aid, f'🆕 Добавлена запись @{username or "(нет)"}: {start_dt.strftime("%H:%M %d.%m.%Y")} Категория: "{cat.get("text")}"')
+                    await bot.send_message(
+                        aid,
+                        f'🆕 Добавлена запись @{username or "(нет)"}: {start_dt.strftime("%H:%M %d.%m.%Y")} Категория: "{cat.get("text")}"{loc_suffix}'
+                    )
                 except Exception:
                     pass
             _add_booking_status_user(query.from_user.id)
