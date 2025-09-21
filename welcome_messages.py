@@ -13,7 +13,7 @@ from aiogram.types import Message
 from aiogram.filters import Command
 from aiogram import F
 from config import bot, dp
-from db import get_setting, set_setting
+from db_async import get_setting, set_setting
 
 # ID целевой группы для приветственных сообщений
 TARGET_GROUP_ID = -1002553563891  # Versavija_test_group
@@ -47,14 +47,14 @@ def _load_messages_from_json() -> list[str]:
 
 WELCOME_MESSAGES = _load_messages_from_json()
 
-def _choose_welcome_text() -> str:
+async def _choose_welcome_text() -> str:
     msgs = list(WELCOME_MESSAGES)
     if not msgs:
         return random.choice(DEFAULT_WELCOME_MESSAGES)
 
     # Загружаем последние N сообщений (как сами тексты)
     try:
-        raw = get_setting('welcome_recent_texts', '') or ''
+        raw = await get_setting('welcome_recent_texts', '') or ''
         recent = [s for s in raw.split('\n') if s]
     except Exception:
         recent = []
@@ -68,7 +68,7 @@ def _choose_welcome_text() -> str:
     # Обновляем список последних (не более 10 храним для экономии места)
     try:
         updated = (recent + [choice])[-10:]
-        set_setting('welcome_recent_texts', '\n'.join(updated))
+        await set_setting('welcome_recent_texts', '\n'.join(updated))
     except Exception:
         pass
     return choice
@@ -89,7 +89,7 @@ async def send_welcome_message(chat_id: int, new_members: list):
         # Отправляем персональное приветствие каждому новому участнику
         for member in new_members:
             # Выбираем случайное сообщение так, чтобы не повторять последние 5
-            welcome_text = _choose_welcome_text()
+            welcome_text = await _choose_welcome_text()
             
             # Формируем обращение к пользователю
             if member.username:
@@ -172,7 +172,7 @@ async def manual_welcome_command(message: Message):
     """
     try:
         # Выбираем сообщение без повтора последних 5
-        welcome_text = _choose_welcome_text()
+        welcome_text = await _choose_welcome_text()
 
         # Формируем персональное обращение
         user = message.from_user

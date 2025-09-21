@@ -1,14 +1,25 @@
+import asyncio
 import logging
 import pathlib
 import json
 import os
+from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
+
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNotFound,
+    TelegramRetryAfter,
+)
+from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 
 # track last shown photo index per chat+category to avoid repeats
 LAST_CATEGORY_PHOTO: dict[tuple[int, str], int] = {}
-from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from aiogram.filters import Command
 
 from config import bot, dp, ADMIN_IDS
 from config import DEFAULT_CITY_NAME, DEFAULT_CITY_CENTER, MAP_ZOOM_DEFAULT
@@ -69,6 +80,17 @@ MENU_MESSAGES = {
     "delete_review": "👇 Выберите отзыв для удаления:",
     "select_date": "👇 Выберите дату:",
 }
+
+BROADCAST_BATCH_SIZE = 20
+BROADCAST_BATCH_DELAY = 1.0
+BROADCAST_PER_MESSAGE_DELAY = 0.05
+BROADCAST_MAX_RETRIES = 2
+
+
+class BroadcastStates(StatesGroup):
+    awaiting_text = State()
+    awaiting_image = State()
+    confirming = State()
 
 # default menu used when DB has no saved menu
 DEFAULT_MENU = [
@@ -289,6 +311,7 @@ def _add_booking_status_user(user_id: int):
 
 async def _set_static_commands():
     try:
+        await bot.delete_my_commands()
         await bot.set_my_commands([
             BotCommand(command='start', description='Главное меню'),
             BotCommand(command='portfolio', description='📸 Портфолио'),
@@ -297,6 +320,8 @@ async def _set_static_commands():
             BotCommand(command='promotions', description='🎉 Акции'),
             BotCommand(command='reviews', description='⭐ Отзывы'),
             BotCommand(command='social', description='📱 Соцсети'),
+            BotCommand(command='adminmode_on', description='Включить админ-режим'),
+            BotCommand(command='adminmode_off', description='Выключить админ-режим'),
         ])
     except Exception as e:
         logging.warning('Failed to set static commands: %s', e)
@@ -335,6 +360,19 @@ def get_portfolio_categories() -> list:
 # persisted to DB so flow survives restarts
 try:
     ADMIN_PENDING_ACTIONS: dict = get_pending_actions()
+    if ADMIN_PENDING_ACTIONS:
+        legacy = [
+            key
+            for key, value in list(ADMIN_PENDING_ACTIONS.items())
+            if (
+                (isinstance(value, dict) and value.get('action') in {'broadcast_text', 'broadcast_image'})
+                or (isinstance(value, str) and value.startswith('broadcast'))
+            )
+        ]
+        if legacy:
+            for key in legacy:
+                ADMIN_PENDING_ACTIONS.pop(key, None)
+            save_pending_actions(ADMIN_PENDING_ACTIONS)
 except Exception:
     # If DB not initialized yet, use empty dict
     ADMIN_PENDING_ACTIONS: dict = {}
@@ -532,11 +570,19 @@ async def catch_yandex_link(message: Message):
                 pass
         return
     lat, lon = coords
+    addr_value = url_addr
+    if not addr_value or not any(ch.isdigit() for ch in addr_value):
+        try:
+            rev_addr = await reverse_geocode_nominatim(lat, lon)
+        except Exception:
+            rev_addr = None
+        if rev_addr:
+            addr_value = rev_addr
     pend['loc_lat'] = lat
     pend['loc_lon'] = lon
     pend['loc_text'] = f'Яндекс.Карты: {lat:.6f},{lon:.6f}'
-    if url_addr:
-        pend['loc_addr'] = url_addr
+    if addr_value:
+        pend['loc_addr'] = addr_value
     pend['loc_source'] = text
     pend['await_loc'] = False
     set_setting(f'pending_booking_{message.from_user.id}', json.dumps(pend, ensure_ascii=False))
@@ -811,7 +857,7 @@ async def cmd_social(message: Message):
 
 
 @dp.callback_query()
-async def handle_callback(query: CallbackQuery):
+async def handle_callback(query: CallbackQuery, state: FSMContext):
     # Fix for UnboundLocalError: explicitly declare imported classes as global
     global InlineKeyboardMarkup, InlineKeyboardButton
     
@@ -1878,6 +1924,24 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
                 res_info = json.loads(res_raw)
             except Exception:
                 res_info = {}
+        async def _build_loc_suffix(lat_val, lon_val, addr_val, src_val) -> str:
+            try:
+                if lat_val is None or lon_val is None:
+                    return ''
+                url = f'https://yandex.ru/maps/?ll={float(lon_val):.6f},{float(lat_val):.6f}&z=16&pt={float(lon_val):.6f},{float(lat_val):.6f}'
+                direct_addr = addr_val
+                if not direct_addr and isinstance(src_val, str) and ('yandex.' in src_val or 'ya.ru' in src_val):
+                    try:
+                        resolved = await resolve_yandex_url(src_val)
+                        direct_addr = parse_yandex_address_from_url(resolved) or await fetch_yandex_address_from_html(resolved)
+                    except Exception:
+                        direct_addr = None
+                if direct_addr:
+                    return f"\n📍 Локация: {url}\n🏷️ Адрес: {direct_addr}"
+                return f"\n📍 Локация: {url}"
+            except Exception:
+                return ''
+
         if res_info.get('bid'):
             old_bk = get_booking(res_info['bid'])
             if old_bk and old_bk['user_id']==query.from_user.id and old_bk['status'] in ('active','confirmed'):
@@ -1894,9 +1958,16 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
                 from datetime import datetime as _dt
                 old_h = _dt.fromisoformat(old_start).strftime('%H:%M %d.%m.%Y')
                 new_h = start_dt.strftime('%H:%M %d.%m.%Y')
+                loc_suffix = await _build_loc_suffix(
+                    pend.get('loc_lat'), pend.get('loc_lon'), pend.get('loc_addr'), pend.get('loc_source')
+                )
                 for aid in _get_all_admin_ids():
                     try:
-                        await bot.send_message(aid, f'🔁 Пользователь @{username or "(нет)"} перенёс запись: {old_h} -> {new_h}. Категория: "{cat.get("text")}"')
+                        await bot.send_message(
+                            aid,
+                            f'🔁 Пользователь @{username or "(нет)"} перенёс запись: {old_h} -> {new_h}. '
+                            f'Категория: "{cat.get("text")}"{loc_suffix}'
+                        )
                     except Exception:
                         pass
                 _add_booking_status_user(query.from_user.id)
@@ -1923,26 +1994,9 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
                 f'✅ Запись создана: {start_dt.strftime("%d.%m.%Y %H:%M")} (с резервом до {buffer_dt.strftime("%H:%M")}). Напоминание за 24 часа.'
             )
             # Prepare optional Yandex Maps link and direct address (no VPN bias) for admins if coordinates/address provided
-            loc_suffix = ''
-            try:
-                lat = pend.get('loc_lat')
-                lon = pend.get('loc_lon')
-                if lat is not None and lon is not None:
-                    url = f'https://yandex.ru/maps/?ll={float(lon):.6f},{float(lat):.6f}&z=16&pt={float(lon):.6f},{float(lat):.6f}'
-                    direct_addr = pend.get('loc_addr')
-                    if not direct_addr and isinstance(pend.get('loc_source'), str) and ('yandex.' in pend['loc_source'] or 'ya.ru' in pend['loc_source']):
-                        # As a last resort try to extract address from the resolved page
-                        try:
-                            resolved = await resolve_yandex_url(pend['loc_source'])
-                            direct_addr = parse_yandex_address_from_url(resolved) or await fetch_yandex_address_from_html(resolved)
-                        except Exception:
-                            direct_addr = None
-                    if direct_addr:
-                        loc_suffix = f"\n📍 Локация: {url}\n🏷️ Адрес: {direct_addr}"
-                    else:
-                        loc_suffix = f"\n📍 Локация: {url}"
-            except Exception:
-                loc_suffix = ''
+            loc_suffix = await _build_loc_suffix(
+                pend.get('loc_lat'), pend.get('loc_lon'), pend.get('loc_addr'), pend.get('loc_source')
+            )
             for aid in _get_all_admin_ids():
                 try:
                     await bot.send_message(
@@ -2124,63 +2178,63 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         return
 
     if data == 'admin_broadcast':
-        if username not in ADMIN_USERNAMES:
+        if not _user_is_admin(username, query.from_user.id):
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        ADMIN_PENDING_ACTIONS[username] = {'action': 'broadcast_text'}
-        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        await state.clear()
+        await state.set_state(BroadcastStates.awaiting_text)
+        await state.update_data(broadcast_text=None, broadcast_image=None)
         await query.message.answer('📢 Отправьте текст сообщения для рассылки всем пользователям бота.')
         return
 
-    if data == 'broadcast_confirm':
-        if username not in ADMIN_USERNAMES:
-            await query.message.answer("🚫 У вас нет доступа к администрированию.")
-            return
-        # Get stored broadcast data
-        broadcast_text = get_setting(f'broadcast_temp_text_{username}', '')
-        broadcast_image = get_setting(f'broadcast_temp_image_{username}', '')
-        if not broadcast_text:
-            await query.message.answer('❌ Текст для рассылки не найден. Попробуйте снова.')
-            return
-        
-        await perform_broadcast(broadcast_text, broadcast_image if broadcast_image else None, query.message)
-        # Clear temporary data
-        set_setting(f'broadcast_temp_text_{username}', '')
-        set_setting(f'broadcast_temp_image_{username}', '')
-        return
-
     if data == 'broadcast_cancel':
-        if username not in ADMIN_USERNAMES:
+        if not _user_is_admin(username, query.from_user.id):
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        # Clear temporary data
-        set_setting(f'broadcast_temp_text_{username}', '')
-        set_setting(f'broadcast_temp_image_{username}', '')
+        current_state = await state.get_state()
+        if current_state in BroadcastStates.__all_states__:
+            await state.clear()
         await query.message.answer('❌ Рассылка отменена.')
         return
 
     if data == 'broadcast_no_image':
-        if username not in ADMIN_USERNAMES:
+        if not _user_is_admin(username, query.from_user.id):
             await query.message.answer("🚫 У вас нет доступа к администрированию.")
             return
-        # Skip image and go to confirmation
-        broadcast_text = get_setting(f'broadcast_temp_text_{username}', '')
-        if not broadcast_text:
-            await query.message.answer('❌ Текст для рассылки не найден. Попробуйте снова.')
+        current_state = await state.get_state()
+        if current_state != BroadcastStates.awaiting_image:
+            await query.message.answer('❌ Сначала отправьте текст рассылки.')
             return
-        
-        users = get_all_users()
-        user_count = len(users)
-        preview_text = broadcast_text[:200] + ("..." if len(broadcast_text) > 200 else "")
-        
-        await query.message.answer(
-            f"📢 Готов к рассылке!\n\n"
-            f"📝 Текст сообщения:\n{preview_text}\n\n"
-            f"🖼️ Изображение: Без изображения\n\n"
-            f"👥 Количество получателей: {user_count}\n\n"
-            f"Подтвердите отправку:",
-            reply_markup=build_broadcast_confirm_keyboard()
-        )
+        data_state = await state.get_data()
+        text = (data_state or {}).get('broadcast_text')
+        if not text:
+            await query.message.answer('❌ Текст для рассылки не найден. Начните заново.')
+            await state.clear()
+            return
+        await state.update_data(broadcast_image=None)
+        await state.set_state(BroadcastStates.confirming)
+        await _send_broadcast_preview(query.message, text, None)
+        return
+
+    if data == 'broadcast_confirm':
+        if not _user_is_admin(username, query.from_user.id):
+            await query.message.answer("🚫 У вас нет доступа к администрированию.")
+            return
+        current_state = await state.get_state()
+        if current_state != BroadcastStates.confirming:
+            await query.message.answer('❌ Подтвердить рассылку можно только после выбора текста и изображения.')
+            return
+        data_state = await state.get_data()
+        text = (data_state or {}).get('broadcast_text')
+        image_file_id = (data_state or {}).get('broadcast_image')
+        if not text:
+            await query.message.answer('❌ Текст для рассылки не найден. Начните заново.')
+            await state.clear()
+            return
+        try:
+            await perform_broadcast(text, image_file_id, query.message)
+        finally:
+            await state.clear()
         return
 
     if data == 'add_promotion':
@@ -2402,39 +2456,195 @@ TikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1
         return
 
 
+@dp.message(BroadcastStates.awaiting_text)
+async def admin_broadcast_wait_text(message: Message, state: FSMContext):
+    username = (message.from_user.username or "").lstrip("@").lower()
+    if not is_admin_view_enabled(username, message.from_user.id):
+        await state.clear()
+        return
+    if not message.text:
+        await message.answer('❌ Ожидаю текст для рассылки. Попробуйте снова.')
+        return
+    text = message.text.strip()
+    if not text:
+        await message.answer('❌ Текст не может быть пустым. Отправьте сообщение заново.')
+        return
+    preview = text[:100] + ("..." if len(text) > 100 else "")
+    await state.update_data(broadcast_text=text, broadcast_image=None)
+    await state.set_state(BroadcastStates.awaiting_image)
+    await message.answer(
+        f'✅ Текст сохранён: "{preview}"\n\n'
+        '🖼️ Теперь пришлите изображение для рассылки или выберите «Без фото»:',
+        reply_markup=build_broadcast_image_keyboard()
+    )
+
+
+@dp.message(BroadcastStates.awaiting_image)
+async def admin_broadcast_wait_image(message: Message, state: FSMContext):
+    username = (message.from_user.username or "").lstrip("@").lower()
+    if not is_admin_view_enabled(username, message.from_user.id):
+        await state.clear()
+        return
+    data = await state.get_data()
+    text = (data or {}).get('broadcast_text')
+    if not text:
+        await message.answer('❌ Текст для рассылки не найден. Начните заново.')
+        await state.clear()
+        return
+
+    image_file_id: Optional[str] = None
+    if message.photo:
+        image_file_id = message.photo[-1].file_id
+    elif message.document and message.document.mime_type and message.document.mime_type.startswith('image'):
+        image_file_id = message.document.file_id
+
+    if not image_file_id:
+        await message.answer(
+            '❌ Ожидаю изображение. Используйте кнопку «Без фото», если хотите отправить только текст.',
+            reply_markup=build_broadcast_image_keyboard()
+        )
+        return
+
+    await state.update_data(broadcast_image=image_file_id)
+    await state.set_state(BroadcastStates.confirming)
+    await _send_broadcast_preview(message, text, image_file_id)
+
+
+@dp.message(BroadcastStates.confirming)
+async def admin_broadcast_confirming(message: Message, state: FSMContext):
+    username = (message.from_user.username or "").lstrip("@").lower()
+    if not is_admin_view_enabled(username, message.from_user.id):
+        await state.clear()
+        return
+    await message.answer('ℹ️ Используйте кнопки «Отправить» или «Отмена», если нужно изменить параметры рассылки.')
+
+
+async def _send_broadcast_preview(message: Message, text: str, image_file_id: Optional[str]) -> None:
+    users = await asyncio.to_thread(get_all_users)
+    user_count = len(users)
+    preview_text = text[:200] + ("..." if len(text) > 200 else "")
+    image_label = 'Прикреплено' if image_file_id else 'Без изображения'
+
+    summary = (
+        f"📢 Готов к рассылке!\n\n"
+        f"📝 Текст сообщения:\n{preview_text}\n\n"
+        f"🖼️ Изображение: {image_label}\n\n"
+        f"👥 Количество получателей: {user_count}\n\n"
+        "Подтвердите отправку:"
+    )
+    if user_count == 0:
+        summary += "\n\n⚠️ В базе нет получателей. Проверьте подключения перед отправкой."
+
+    if image_file_id:
+        await message.answer_photo(image_file_id, caption=summary, reply_markup=build_broadcast_confirm_keyboard())
+    else:
+        await message.answer(summary, reply_markup=build_broadcast_confirm_keyboard())
+
+
 async def perform_broadcast(text: str, image_file_id: str = None, message: Message = None):
     """Send broadcast message to all users."""
-    users = get_all_users()
-    sent = 0
-    failed = 0
-    
-    broadcast_type = "с изображением" if image_file_id else "только текст"
-    await message.answer(f"📤 Начинаю рассылку ({broadcast_type}) для {len(users)} пользователей...")
-    
-    for user_id, username, first_name, last_name in users:
-        try:
+    async def _send_to_user(user_id: int) -> tuple[bool, Optional[str]]:
+        """Helper that dispatches message/photo to конкретного пользователя."""
+
+        async def _dispatch() -> None:
             if image_file_id:
                 await bot.send_photo(user_id, image_file_id, caption=text)
             else:
                 await bot.send_message(user_id, text)
+
+        return await _broadcast_send_with_retry(user_id, _dispatch, max_retries=BROADCAST_MAX_RETRIES)
+
+    users = await asyncio.to_thread(get_all_users)
+    total = len(users)
+    sent = 0
+    failures = Counter()
+
+    broadcast_type = "с изображением" if image_file_id else "только текст"
+    if message:
+        await message.answer(f"📤 Начинаю рассылку ({broadcast_type}) для {total} пользователей...")
+
+    if total == 0:
+        if message:
+            await message.answer("ℹ️ В базе нет получателей для рассылки.")
+        return
+
+    for idx, (user_id, username, first_name, last_name) in enumerate(users, start=1):
+        success, reason = await _send_to_user(user_id)
+        if success:
             sent += 1
-        except Exception as e:
-            failed += 1
-            logging.warning(f"Failed to send broadcast to user {user_id}: {e}")
-    
-    await message.answer(
-        f"✅ Рассылка завершена!\n\n"
-        f"📨 Отправлено: {sent}\n"
-        f"❌ Не доставлено: {failed}\n"
-        f"📊 Всего пользователей: {len(users)}"
-    )
+        else:
+            failures[reason or 'unknown'] += 1
+
+        # Плавное ограничение скорости: небольшая пауза между сообщениями
+        if idx < total:
+            if idx % BROADCAST_BATCH_SIZE == 0:
+                await asyncio.sleep(BROADCAST_BATCH_DELAY)
+            else:
+                await asyncio.sleep(BROADCAST_PER_MESSAGE_DELAY)
+
+    failed = total - sent
+
+    summary_lines = [
+        "✅ Рассылка завершена!",
+        f"📨 Отправлено: {sent}",
+        f"❌ Не доставлено: {failed}",
+        f"📊 Всего пользователей: {total}",
+    ]
+    if failures:
+        breakdown = ', '.join(f"{reason}: {count}" for reason, count in failures.most_common())
+        summary_lines.append(f"ℹ️ Причины недоставки: {breakdown}")
+
+    result_text = "\n".join(summary_lines)
+    if message:
+        await message.answer(result_text)
+
+
+async def _broadcast_send_with_retry(
+    user_id: int,
+    dispatcher: Callable[[], Awaitable[None]],
+    max_retries: int = 2,
+) -> tuple[bool, Optional[str]]:
+    """Отправить сообщение пользователю с учётом FloodWait/retry.
+
+    Возвращает (success: bool, reason: str | None).
+    """
+    attempt = 0
+    while True:
+        try:
+            await dispatcher()
+            return True, None
+        except TelegramRetryAfter as exc:
+            attempt += 1
+            if attempt > max_retries:
+                logging.warning('FloodWait limit для %s: %s', user_id, exc)
+                return False, 'flood_wait'
+            delay = exc.retry_after + 0.5
+            logging.info('FloodWait %ss при рассылке пользователю %s, повтор #%s', delay, user_id, attempt)
+            await asyncio.sleep(delay)
+        except (TelegramForbiddenError, TelegramNotFound) as exc:
+            logging.info('Пользователь %s недоступен для рассылки: %s', user_id, exc)
+            return False, 'unreachable'
+        except TelegramBadRequest as exc:
+            logging.warning('Неверный запрос при рассылке пользователю %s: %s', user_id, exc)
+            return False, 'bad_request'
+        except Exception as exc:
+            attempt += 1
+            logging.warning('Ошибка рассылки пользователю %s (попытка %s/%s): %s', user_id, attempt, max_retries + 1, exc)
+            if attempt > max_retries:
+                return False, exc.__class__.__name__.lower()
+            await asyncio.sleep(1.0)
 
 
 @dp.message()
-async def handle_admin_pending(message: Message):
+async def handle_admin_pending(message: Message, state: FSMContext):
     username = (message.from_user.username or "").lstrip("@").lower()
     # allow only if admin mode ON (else ignore silently)
     if not is_admin_view_enabled(username, message.from_user.id):
+        return
+
+    current_state = await state.get_state()
+    if current_state in BroadcastStates.__all_states__:
+        # Обработка рассылки выполняется отдельными хендлерами
         return
 
     action = ADMIN_PENDING_ACTIONS.get(username)
@@ -2452,69 +2662,6 @@ async def handle_admin_pending(message: Message):
         a = action
         payload = {}
     else:
-        return
-
-    if a == 'broadcast_text':
-        if not message.text:
-            await message.answer('❌ Ожидаю текст для рассылки. Пожалуйста, отправьте текст сообщения.')
-            return
-        
-        text = message.text.strip()
-        if not text:
-            await message.answer('❌ Текст не может быть пустым. Попробуйте снова.')
-            return
-        
-        # Store broadcast text temporarily
-        set_setting(f'broadcast_temp_text_{username}', text)
-        
-        # Move to image step
-        ADMIN_PENDING_ACTIONS[username] = {'action': 'broadcast_image', 'payload': {'text': text}}
-        save_pending_actions(ADMIN_PENDING_ACTIONS)
-        
-        await message.answer(
-            f'✅ Текст сохранён: "{text[:100]}{"..." if len(text) > 100 else ""}"\n\n'
-            f'🖼️ Теперь пришлите изображение для рассылки или выберите "Без фото":',
-            reply_markup=build_broadcast_image_keyboard()
-        )
-        return
-
-    if a == 'broadcast_image':
-        text = payload.get('text', '')
-        image_file_id = None
-        
-        # Handle image
-        photo = None
-        if message.photo:
-            photo = message.photo[-1]
-        elif message.document and message.document.mime_type and message.document.mime_type.startswith('image'):
-            image_file_id = message.document.file_id
-        
-        if photo:
-            image_file_id = photo.file_id
-        
-        if not image_file_id:
-            await message.answer('❌ Ожидаю изображение. Используйте кнопку "Без фото" если хотите сделать рассылку без изображения.')
-            return
-        
-        # Store image temporarily
-        set_setting(f'broadcast_temp_image_{username}', image_file_id)
-        
-        # Clear pending action and show confirmation
-        ADMIN_PENDING_ACTIONS.pop(username, None)
-        save_pending_actions(ADMIN_PENDING_ACTIONS)
-        
-        users = get_all_users()
-        user_count = len(users)
-        preview_text = text[:200] + ("..." if len(text) > 200 else "")
-        
-        await message.answer(
-            f"📢 Готов к рассылке!\n\n"
-            f"📝 Текст сообщения:\n{preview_text}\n\n"
-            f"�️ Изображение: Прикреплено\n\n"
-            f"�👥 Количество получателей: {user_count}\n\n"
-            f"Подтвердите отправку:",
-            reply_markup=build_broadcast_confirm_keyboard()
-        )
         return
 
     # Process other admin actions

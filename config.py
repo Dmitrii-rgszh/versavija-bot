@@ -2,6 +2,7 @@ import os
 import logging
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
 import sys
 
 load_dotenv()
@@ -34,7 +35,7 @@ for part in _env_ids.split(','):
 
 # Shared bot and dispatcher
 bot = Bot(BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 
 # Mapping defaults (Yandex Maps deep-linking)
 # Samara city center by default: (lat, lon)

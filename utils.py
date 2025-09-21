@@ -349,13 +349,58 @@ async def _geocode_nominatim(query: str) -> Optional[Tuple[float, float]]:
 
 
 async def reverse_geocode_nominatim(lat: float, lon: float) -> Optional[str]:
-    """Reverse geocode coordinates to a human-readable RU address using Nominatim.
-
-    Returns a concise Russian-style address like: "г. Самара, ул. Ташкентская, д. 143"
-    Falls back to the provider's display_name if components are incomplete.
-    """
+    """Reverse geocode coordinates to a human-readable RU address using Nominatim."""
     if aiohttp is None:
         return None
+
+    url = "https://nominatim.openstreetmap.org/reverse"
+    params = {
+        'lat': f"{lat:.6f}",
+        'lon': f"{lon:.6f}",
+        'format': 'jsonv2',
+        'addressdetails': '1',
+        'accept-language': 'ru'
+    }
+    headers = {
+        'User-Agent': 'versavija-bot/1.0 (contact: none)'
+    }
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json(content_type=None)
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    addr = data.get('address') or {}
+    locality = addr.get('city') or addr.get('town') or addr.get('municipality') or addr.get('village') or addr.get('hamlet')
+    road = addr.get('road') or addr.get('pedestrian') or addr.get('footway') or addr.get('residential')
+    house = addr.get('house_number') or addr.get('house')
+    suburb = addr.get('suburb') or addr.get('neighbourhood')
+
+    parts: list[str] = []
+    if locality:
+        parts.append(f"г. {locality}")
+    if suburb:
+        parts.append(suburb)
+    if road:
+        parts.append(f"ул. {road}")
+    if house:
+        parts.append(f"д. {house}")
+
+    if parts:
+        return ", ".join(parts)
+
+    display_name = data.get('display_name')
+    if isinstance(display_name, str) and display_name.strip():
+        return ", ".join(display_name.split(',')[:5]).strip()
+    return None
 
 
 def parse_yandex_address_from_url(url: str) -> Optional[str]:
