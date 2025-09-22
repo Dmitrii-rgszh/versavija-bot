@@ -44,6 +44,7 @@ def _load_reviews() -> list[str]:
 async def _show_reviews(message: Message, username: str, user_id: int) -> None:
     photos = _load_reviews()
     chat_key = (message.chat.id, 'reviews')
+    displayed = False
     if photos:
         removed_invalid = False
         while photos:
@@ -58,18 +59,20 @@ async def _show_reviews(message: Message, username: str, user_id: int) -> None:
                     reply_markup=build_reviews_nav_keyboard(idx),
                 )
                 LAST_CATEGORY_PHOTO[chat_key] = idx
-                return
+                displayed = True
+                break
             except Exception as exc:
                 logging.warning('Failed to send review photo idx=%s fid=%s: %s', idx, fid, exc)
                 photos.pop(idx)
                 removed_invalid = True
                 set_setting('reviews_photos', json.dumps(photos, ensure_ascii=False))
                 reset_last_category_position('reviews')
-        await message.answer('⭐ Отзывы пока не добавлены.')
-        return
+        if removed_invalid and not photos:
+            await message.answer('⭐ Отзывы пока не добавлены.')
+        elif not displayed:
+            await message.answer('⭐ Отзывы пока не добавлены.')
     else:
         await message.answer('⭐ Отзывы пока не добавлены.')
-        return
 
     if await is_admin_view_enabled(username, user_id):
         await message.answer('Управление отзывами:', reply_markup=build_reviews_admin_keyboard())
