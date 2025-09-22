@@ -34,6 +34,34 @@ BOOK_TZ = timezone.utc
 
 # --- Helpers -----------------------------------------------------------------
 
+
+async def _build_loc_suffix(
+    lat_val: float | None,
+    lon_val: float | None,
+    addr_val: str | None,
+    src_val: str | None,
+) -> str:
+    try:
+        if lat_val is None or lon_val is None:
+            return ''
+        url = f'https://yandex.ru/maps/?ll={float(lon_val):.6f},{float(lat_val):.6f}&z=16&pt={float(lon_val):.6f},{float(lat_val):.6f}'
+        direct_addr = addr_val
+        if not direct_addr and isinstance(src_val, str) and ('yandex.' in src_val or 'ya.ru' in src_val):
+            try:
+                resolved = await resolve_yandex_url(src_val)
+                direct_addr = (
+                    parse_yandex_address_from_url(resolved)
+                    or await fetch_yandex_address_from_html(resolved)
+                )
+            except Exception:
+                direct_addr = None
+        if direct_addr:
+            return f"\n📍 Локация: {url}\n🏷️ Адрес: {direct_addr}"
+        return f"\n📍 Локация: {url}"
+    except Exception:
+        return ''
+
+
 DEFAULT_PORTFOLIO_CATEGORIES = [
     {"text": "👨‍👩‍👧‍👦 Семейная", "slug": "family"},
     {"text": "💕 Love Story", "slug": "love_story"},
@@ -554,24 +582,6 @@ async def booking_confirm(query: CallbackQuery) -> None:
     except Exception:
         res_info = {}
 
-    async def _build_loc_suffix(lat_val, lon_val, addr_val, src_val) -> str:
-        try:
-            if lat_val is None or lon_val is None:
-                return ''
-            url = f'https://yandex.ru/maps/?ll={float(lon_val):.6f},{float(lat_val):.6f}&z=16&pt={float(lon_val):.6f},{float(lat_val):.6f}'
-            direct_addr = addr_val
-            if not direct_addr and isinstance(src_val, str) and ('yandex.' in src_val or 'ya.ru' in src_val):
-                try:
-                    resolved = await resolve_yandex_url(src_val)
-                    direct_addr = parse_yandex_address_from_url(resolved) or await fetch_yandex_address_from_html(resolved)
-                except Exception:
-                    direct_addr = None
-            if direct_addr:
-                return f"\n📍 Локация: {url}\n🏷️ Адрес: {direct_addr}"
-            return f"\n📍 Локация: {url}"
-        except Exception:
-            return ''
-
     if res_info.get('bid'):
         old_bk = await db_async.get_booking(res_info['bid'])
         if old_bk and old_bk['user_id'] == query.from_user.id and old_bk['status'] in ('active', 'confirmed'):
@@ -722,11 +732,24 @@ async def booking_status_card(query: CallbackQuery) -> None:
         await query.message.answer(MENU_MESSAGES['main'], reply_markup=kb)
         return
     dt = datetime.fromisoformat(bk['start_ts'])
+    loc_suffix = await _build_loc_suffix(
+        bk.get('loc_lat'),
+        bk.get('loc_lon'),
+        bk.get('loc_addr'),
+        bk.get('loc_source'),
+    )
+    extra_loc = ''
+    if not loc_suffix and bk.get('loc_text'):
+        extra_loc = f"\n📍 Локация: {bk.get('loc_text')}"
     txt = (
         '📅 Ваша запись:\n'
-        f'Время: {dt.strftime("%H:%M %d.%m.%Y")}\n'
+        f'Время: {dt.strftime("%H:%M %d.%м.%Y")}\n'
         f'Категория: {bk.get("category") or "—"}'
     )
+    if loc_suffix:
+        txt += loc_suffix
+    elif extra_loc:
+        txt += extra_loc
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='Перенести', callback_data=f'bk_resch:{bk["id"]}')],
         [InlineKeyboardButton(text='Отменить', callback_data=f'bk_cancel_booking:{bk["id"]}')],
