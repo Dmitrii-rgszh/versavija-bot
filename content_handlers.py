@@ -45,30 +45,31 @@ async def _show_reviews(message: Message, username: str, user_id: int) -> None:
     photos = _load_reviews()
     chat_key = (message.chat.id, 'reviews')
     if photos:
-        idx = len(photos) - 1
-        fid = photos[idx]
-        caption = f'⭐ Отзыв {idx + 1} из {len(photos)}'
-        try:
-            await bot.send_photo(
-                chat_id=message.chat.id,
-                photo=fid,
-                caption=caption,
-                reply_markup=build_reviews_nav_keyboard(idx),
-            )
-            LAST_CATEGORY_PHOTO[chat_key] = idx
-        except Exception as exc:
-            logging.warning('Failed to send review photo idx=%s fid=%s: %s', idx, fid, exc)
-            photos.pop(idx)
-            set_setting('reviews_photos', json.dumps(photos, ensure_ascii=False))
-            reset_last_category_position('reviews')
-            if photos:
-                await message.answer('⭐ Один из отзывов был некорректен и удалён. Показываю оставшиеся.')
-                await _show_reviews(message, username, user_id)
-            else:
-                await message.answer('⭐ Отзывы пока не добавлены.')
-            return
+        removed_invalid = False
+        while photos:
+            idx = len(photos) - 1
+            fid = photos[idx]
+            caption = f'⭐ Отзыв {idx + 1} из {len(photos)}'
+            try:
+                await bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=fid,
+                    caption=caption,
+                    reply_markup=build_reviews_nav_keyboard(idx),
+                )
+                LAST_CATEGORY_PHOTO[chat_key] = idx
+                return
+            except Exception as exc:
+                logging.warning('Failed to send review photo idx=%s fid=%s: %s', idx, fid, exc)
+                photos.pop(idx)
+                removed_invalid = True
+                set_setting('reviews_photos', json.dumps(photos, ensure_ascii=False))
+                reset_last_category_position('reviews')
+        await message.answer('⭐ Отзывы пока не добавлены.')
+        return
     else:
         await message.answer('⭐ Отзывы пока не добавлены.')
+        return
 
     if await is_admin_view_enabled(username, user_id):
         await message.answer('Управление отзывами:', reply_markup=build_reviews_admin_keyboard())
