@@ -878,6 +878,7 @@ async def handle_admin_pending(message: Message, state: FSMContext):
     # Process other admin actions
     a = action.get('action')
     payload = action.get('payload', {})
+    logging.info('Admin pending action for %s: %s', username, a)
 
     if await handle_portfolio_pending_action(message, username, a, payload):
         return

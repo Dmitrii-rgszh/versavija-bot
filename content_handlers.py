@@ -212,6 +212,7 @@ async def handle_content_pending_action(
         if not message.text:
             await message.answer('Ожидаю текст для соцсетей. Попробуйте снова.')
             return True
+        logging.info('Content pending: edit_social_text by %s', username)
         new_text = message.text.strip()
         if not new_text:
             await message.answer('Текст не может быть пустым.')
@@ -225,6 +226,7 @@ async def handle_content_pending_action(
         return True
 
     if action == 'add_review':
+        logging.info('Content pending: add_review by %s, has photo=%s', username, bool(message.photo))
         if message.photo:
             photos = _load_reviews()
             file_id = message.photo[-1].file_id
