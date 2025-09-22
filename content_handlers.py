@@ -139,8 +139,10 @@ async def cb_reviews_add(query: CallbackQuery) -> None:
         await query.message.answer('🚫 Нет доступа.')
         return
     admin_key = _admin_key_from_username(query.from_user.username)
+    ADMIN_PENDING_ACTIONS.pop(admin_key, None)
     ADMIN_PENDING_ACTIONS[admin_key] = {'action': 'add_review', 'payload': {}}
     save_pending_actions(ADMIN_PENDING_ACTIONS)
+    logging.info('Set pending action add_review for %s', admin_key)
     await query.message.answer('📝 Отправьте фотографию отзыва:')
 
 
