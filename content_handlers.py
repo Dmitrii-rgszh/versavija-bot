@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from aiogram import F, Router
@@ -221,6 +222,14 @@ async def handle_content_pending_action(
                 photos.append(file_id)
                 set_setting('reviews_photos', json.dumps(photos, ensure_ascii=False))
                 reset_last_category_position('reviews')
+                logging.info('Review photo stored user=%s total=%s', message.from_user.id, len(photos))
+                try:
+                    await message.answer_photo(
+                        file_id,
+                        caption=f'⭐ Новый отзыв #{len(photos)} добавлен. Спасибо!',
+                    )
+                except Exception:
+                    pass
                 await message.answer(f'✅ Отзыв добавлен! Всего отзывов: {len(photos)}')
             else:
                 await message.answer('Этот отзыв уже добавлен.')
