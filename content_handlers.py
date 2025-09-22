@@ -55,12 +55,18 @@ async def _show_reviews(message: Message, username: str, user_id: int) -> None:
                 caption=caption,
                 reply_markup=build_reviews_nav_keyboard(idx),
             )
-        except Exception:
-            await message.answer(
-                f'⭐ Отзывы (ошибка отправки фото)',
-                reply_markup=build_reviews_nav_keyboard(0),
-            )
-        LAST_CATEGORY_PHOTO[chat_key] = idx
+            LAST_CATEGORY_PHOTO[chat_key] = idx
+        except Exception as exc:
+            logging.warning('Failed to send review photo idx=%s fid=%s: %s', idx, fid, exc)
+            photos.pop(idx)
+            set_setting('reviews_photos', json.dumps(photos, ensure_ascii=False))
+            reset_last_category_position('reviews')
+            if photos:
+                await message.answer('⭐ Один из отзывов был некорректен и удалён. Показываю оставшиеся.')
+                await _show_reviews(message, username, user_id)
+            else:
+                await message.answer('⭐ Отзывы пока не добавлены.')
+            return
     else:
         await message.answer('⭐ Отзывы пока не добавлены.')
 
