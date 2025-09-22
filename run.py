@@ -8,6 +8,9 @@ import handlers  # noqa: F401  (side-effect import)
 import welcome_messages  # импорт модуля приветственных сообщений
 from birthday_scheduler import setup_birthday_scheduler
 from aiogram.types import BotCommand
+from booking_handlers import booking_router
+from content_handlers import content_router
+from portfolio_handlers import portfolio_router
 from db_async import init_db  # ensure DB initialized без блокировки события
 
 
@@ -89,6 +92,9 @@ async def main():
             logging.exception('Failed to delete webhook before polling start')
 
         # Команды бота
+        dp.include_router(booking_router)
+        dp.include_router(content_router)
+        dp.include_router(portfolio_router)
         await _set_bot_commands()
 
         # Запускаем Bot API polling
