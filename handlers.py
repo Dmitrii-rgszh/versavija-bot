@@ -42,7 +42,7 @@ from db import (
     cleanup_expired_promotions,
 )
 from portfolio_handlers import handle_portfolio_pending_action
-from content_handlers import handle_content_pending_action
+from content_handlers import handle_content_pending_action, REVIEW_PENDING_USERS
 from keyboards import (
     build_main_keyboard_from_menu,
     admin_panel_keyboard,
@@ -879,6 +879,10 @@ async def handle_admin_pending(message: Message, state: FSMContext):
     a = action.get('action')
     payload = action.get('payload', {})
     logging.info('Admin pending action for %s: %s', username, a)
+    if a == 'add_photo_cat' and message.from_user.id in REVIEW_PENDING_USERS:
+        ADMIN_PENDING_ACTIONS[username] = {'action': 'add_review', 'payload': {}}
+        save_pending_actions(ADMIN_PENDING_ACTIONS)
+        a = 'add_review'
 
     if await handle_portfolio_pending_action(message, username, a, payload):
         return

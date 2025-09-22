@@ -22,6 +22,7 @@ from keyboards import (
 from portfolio_state import LAST_CATEGORY_PHOTO, reset_last_category_position
 
 content_router = Router(name="content")
+REVIEW_PENDING_USERS: set[int] = set()
 
 _DEFAULT_SOCIAL_TEXT = """Привет! Я Мария — фотограф и ретушёр 📸✨\nПодписывайтесь на мои соцсети, чтобы видеть свежие съёмки, портфолио и реальные "до/после" ретуши, а также быстро написать мне в личные сообщения.\n\nVK → https://vk.com/versavija\n\nInstagram → https://www.instagram.com/versavija?igsh=Y3ZhdnFvbWN0ejlq\n\nTikTok → https://www.tiktok.com/@00013_mariat_versavija?_t=ZS-8zC3OvSXSIZ&_r=1\n\nЖду ваши вопросы в директ — отвечаю лично 💬"""
 
@@ -143,6 +144,7 @@ async def cb_reviews_add(query: CallbackQuery) -> None:
     ADMIN_PENDING_ACTIONS[admin_key] = {'action': 'add_review', 'payload': {}}
     save_pending_actions(ADMIN_PENDING_ACTIONS)
     logging.info('Set pending action add_review for %s', admin_key)
+    REVIEW_PENDING_USERS.add(query.from_user.id)
     await query.message.answer('📝 Отправьте фотографию отзыва:')
 
 
@@ -249,8 +251,10 @@ async def handle_content_pending_action(
                 await message.answer('Этот отзыв уже добавлен.')
             ADMIN_PENDING_ACTIONS.pop(username, None)
             save_pending_actions(ADMIN_PENDING_ACTIONS)
+            REVIEW_PENDING_USERS.discard(message.from_user.id)
             return True
         await message.answer('Пожалуйста, отправьте фотографию отзыва.')
+        REVIEW_PENDING_USERS.discard(message.from_user.id)
         return True
 
     return False
